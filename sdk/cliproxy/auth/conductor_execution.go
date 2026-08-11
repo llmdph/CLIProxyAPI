@@ -272,6 +272,8 @@ func mergeRequestHeaders(current, updates http.Header, clear []string) http.Head
 	return out
 }
 
+const xaiNoThinkMaxAttempts = 3
+
 func (m *Manager) executeMixedOnce(ctx context.Context, providers []string, req cliproxyexecutor.Request, opts cliproxyexecutor.Options, maxRetryCredentials int) (cliproxyexecutor.Response, error) {
 	if len(providers) == 0 {
 		return cliproxyexecutor.Response{}, &Error{Code: "provider_not_found", Message: "no provider supplied"}
@@ -284,8 +286,14 @@ func (m *Manager) executeMixedOnce(ctx context.Context, providers []string, req 
 	tried := make(map[string]struct{})
 	attempted := make(map[string]struct{})
 	var lastErr error
+	var lastNoThinkResp cliproxyexecutor.Response
+	var hasLastNoThink bool
+	noThinkAttempts := 0
 	for {
 		if !homeMode && maxRetryCredentials > 0 && len(attempted) >= maxRetryCredentials {
+			if hasLastNoThink {
+				return lastNoThinkResp, nil
+			}
 			if lastErr != nil {
 				return cliproxyexecutor.Response{}, lastErr
 			}
@@ -297,6 +305,9 @@ func (m *Manager) executeMixedOnce(ctx context.Context, providers []string, req 
 		}
 		auth, executor, provider, errPick := m.pickNextMixed(ctx, providers, routeModel, pickOpts, tried)
 		if errPick != nil {
+			if hasLastNoThink {
+				return lastNoThinkResp, nil
+			}
 			if shouldReturnLastErrorOnPickFailure(homeMode, lastErr, errPick) {
 				return cliproxyexecutor.Response{}, lastErr
 			}
@@ -368,11 +379,53 @@ func (m *Manager) executeMixedOnce(ctx context.Context, providers []string, req 
 			if errCancel := claudeOAuthRequestCancellation(execCtx, auth, errExec); errCancel != nil {
 				return cliproxyexecutor.Response{}, errCancel
 			}
+			if noThink, okNoThink := cliproxyexecutor.AsNoThinkStream(errExec); okNoThink {
+				m.disableAuthForNoThink(execCtx, auth, noThink)
+				result := Result{
+					AuthID:   auth.ID,
+					Provider: provider,
+					Model:    resultModel,
+					Success:  false,
+					Error:    &Error{Code: "no_think_stream", Message: noThink.Error(), Retryable: true},
+				}
+				m.MarkResult(execCtx, result)
+				if len(noThink.Fallback.Payload) > 0 || noThink.Fallback.Headers != nil {
+					lastNoThinkResp = noThink.Fallback
+					hasLastNoThink = true
+				} else if len(resp.Payload) > 0 || resp.Headers != nil {
+					lastNoThinkResp = resp
+					hasLastNoThink = true
+				}
+				noThinkAttempts++
+				lastErr = errExec
+				if noThinkAttempts >= xaiNoThinkMaxAttempts {
+					if hasLastNoThink {
+						return lastNoThinkResp, nil
+					}
+					return cliproxyexecutor.Response{}, errExec
+				}
+				authErr = errExec
+				continue
+			}
 			result := Result{AuthID: auth.ID, Provider: provider, Model: resultModel, Success: errExec == nil}
 			if errExec != nil {
 				result.Error = resultErrorFromError(errExec)
 				if ra := retryAfterFromError(errExec); ra != nil {
 					result.RetryAfter = ra
+				}
+				if isXAIProvider(provider) && isXAIQuotaExhaustedError(errExec) {
+					m.disableAuthForQuotaExhausted(execCtx, auth, errExec)
+					m.MarkResult(execCtx, result)
+					authErr = errExec
+					continue
+				}
+				if isXAIProvider(provider) {
+					// Stick to one Grok account: transient failures must not cool
+					// down or rotate to the next credential.
+					if isRequestInvalidError(errExec) {
+						return cliproxyexecutor.Response{}, errExec
+					}
+					return cliproxyexecutor.Response{}, errExec
 				}
 				m.MarkResult(execCtx, result)
 				if isRequestInvalidError(errExec) {
@@ -507,6 +560,14 @@ func (m *Manager) executeCountMixedOnce(ctx context.Context, providers []string,
 				// that remains usable through the messages endpoint.
 				if isCountTokensEndpointNotFoundError(errExec, execReq.Model) {
 					m.recordAvailabilityNeutralResult(execCtx, result)
+				} else if isXAIProvider(provider) && isXAIQuotaExhaustedError(errExec) {
+					m.disableAuthForQuotaExhausted(execCtx, auth, errExec)
+					m.MarkResult(execCtx, result)
+				} else if isXAIProvider(provider) {
+					if isRequestInvalidError(errExec) {
+						return cliproxyexecutor.Response{}, errExec
+					}
+					return cliproxyexecutor.Response{}, errExec
 				} else {
 					m.MarkResult(execCtx, result)
 				}
@@ -548,8 +609,13 @@ func (m *Manager) executeStreamMixedOnce(ctx context.Context, providers []string
 	attempted := make(map[string]struct{})
 	unauthorizedRefreshTried := make(map[string]struct{})
 	var lastErr error
+	var lastNoThinkStream *cliproxyexecutor.StreamResult
+	noThinkAttempts := 0
 	for {
 		if !homeMode && maxRetryCredentials > 0 && len(attempted) >= maxRetryCredentials {
+			if lastNoThinkStream != nil {
+				return lastNoThinkStream, nil
+			}
 			if lastErr != nil {
 				return nil, lastErr
 			}
@@ -576,6 +642,9 @@ func (m *Manager) executeStreamMixedOnce(ctx context.Context, providers []string
 			auth, executor, provider, errPick = m.pickNextMixed(ctx, providers, routeModel, pickOpts, tried)
 		}
 		if errPick != nil {
+			if lastNoThinkStream != nil {
+				return lastNoThinkStream, nil
+			}
 			if shouldReturnLastErrorOnPickFailure(homeMode, lastErr, errPick) {
 				return nil, lastErr
 			}
@@ -677,6 +746,38 @@ func (m *Manager) executeStreamMixedOnce(ctx context.Context, providers []string
 			pooled = false
 		}
 		streamResult, errStream := m.executeStreamWithModelPool(execCtx, executor, auth, provider, execReq, execOpts, routeModel, streamExecutionModel, models, pooled, aliasResult, routing, !homeMode || selection != nil, selection != nil, unauthorizedRefreshTried)
+		if noThink, okNoThink := cliproxyexecutor.AsNoThinkStream(errStream); okNoThink {
+			if selection != nil {
+				releaseAttempt()
+				_ = m.endHomeSelectionBeforeRedispatch(ctx, selection, "no_think_stream")
+			}
+			m.disableAuthForNoThink(execCtx, auth, noThink)
+			result := Result{
+				AuthID:   auth.ID,
+				Provider: provider,
+				Model:    routeModel,
+				Success:  false,
+				Error:    &Error{Code: "no_think_stream", Message: noThink.Error(), Retryable: true},
+			}
+			if selection != nil {
+				m.reportHomeResult(execCtx, result, auth)
+			} else {
+				m.MarkResult(execCtx, result)
+			}
+			lastNoThinkStream = streamResultFromNoThink(noThink)
+			noThinkAttempts++
+			lastErr = errStream
+			if noThinkAttempts >= xaiNoThinkMaxAttempts {
+				if lastNoThinkStream != nil {
+					return lastNoThinkStream, nil
+				}
+				return nil, errStream
+			}
+			if homeMode {
+				homeAuthCount++
+			}
+			continue
+		}
 		if errStream != nil {
 			if selection != nil {
 				releaseAttempt()
@@ -688,6 +789,32 @@ func (m *Manager) executeStreamMixedOnce(ctx context.Context, providers []string
 				return nil, errCtx
 			}
 			if isRequestInvalidError(errStream) {
+				return nil, errStream
+			}
+			if isXAIProvider(provider) && isXAIQuotaExhaustedError(errStream) {
+				m.disableAuthForQuotaExhausted(execCtx, auth, errStream)
+				result := Result{
+					AuthID:   auth.ID,
+					Provider: provider,
+					Model:    routeModel,
+					Success:  false,
+					Error:    resultErrorFromError(errStream),
+				}
+				if ra := retryAfterFromError(errStream); ra != nil {
+					result.RetryAfter = ra
+				}
+				if selection != nil {
+					m.reportHomeResult(execCtx, result, auth)
+				} else {
+					m.MarkResult(execCtx, result)
+				}
+				lastErr = errStream
+				if homeMode {
+					homeAuthCount++
+				}
+				continue
+			}
+			if isXAIProvider(provider) {
 				return nil, errStream
 			}
 			lastErr = errStream
@@ -704,6 +831,44 @@ func (m *Manager) executeStreamMixedOnce(ctx context.Context, providers []string
 		}
 		return streamResult, nil
 	}
+}
+
+func streamResultFromNoThink(noThink *cliproxyexecutor.NoThinkStreamError) *cliproxyexecutor.StreamResult {
+	if noThink == nil {
+		return nil
+	}
+	chunks := make([][]byte, 0, len(noThink.StreamChunks))
+	chunks = append(chunks, noThink.StreamChunks...)
+	out := make(chan cliproxyexecutor.StreamChunk, len(chunks))
+	go func() {
+		defer close(out)
+		for _, payload := range chunks {
+			out <- cliproxyexecutor.StreamChunk{Payload: payload}
+		}
+	}()
+	return &cliproxyexecutor.StreamResult{Headers: noThink.StreamHeader, Chunks: out}
+}
+
+func (m *Manager) disableAuthForNoThink(ctx context.Context, auth *Auth, noThink *cliproxyexecutor.NoThinkStreamError) {
+	if m == nil || auth == nil {
+		return
+	}
+	clone := auth.Clone()
+	if clone == nil {
+		return
+	}
+	clone.Disabled = true
+	clone.Status = StatusDisabled
+	detail := "no_think_stream"
+	if noThink != nil && strings.TrimSpace(noThink.Detail) != "" {
+		detail = "no_think_stream: " + strings.TrimSpace(noThink.Detail)
+	}
+	clone.StatusMessage = detail
+	if _, errUpdate := m.Update(ctx, clone); errUpdate != nil {
+		log.WithError(errUpdate).Warnf("xai: failed to disable auth %s after %s", auth.ID, detail)
+		return
+	}
+	log.Warnf("xai: disabled auth %s after %s", auth.ID, detail)
 }
 
 func ensureRequestedModelMetadata(opts cliproxyexecutor.Options, requestedModel string) cliproxyexecutor.Options {

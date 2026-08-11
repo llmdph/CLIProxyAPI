@@ -45,7 +45,7 @@ func (e *XAIExecutor) ExecuteStream(ctx context.Context, auth *cliproxyauth.Auth
 	e.recordXAIRequest(ctx, auth, url, httpReq.Header.Clone(), prepared.body)
 
 	helps.PrepareUpstreamForProxy(ctx, e.cfg, auth)
-	httpClient := helps.NewProxyAwareHTTPClient(ctx, e.cfg, auth, 0)
+	httpClient := helps.NewFreshXAIHTTPClient(ctx, e.cfg, auth, 0)
 	httpClient = reporter.TrackHTTPClient(httpClient)
 	httpResp, err := httpClient.Do(httpReq)
 	if err != nil {
@@ -66,110 +66,116 @@ func (e *XAIExecutor) ExecuteStream(ctx context.Context, auth *cliproxyauth.Auth
 		helps.LogWithRequestID(ctx).Debugf("request error, error status: %d, error message: %s", httpResp.StatusCode, helps.SummarizeErrorBody(httpResp.Header.Get("Content-Type"), data))
 		return nil, xaiStatusErr(httpResp.StatusCode, data)
 	}
+	defer func() {
+		if errClose := httpResp.Body.Close(); errClose != nil {
+			log.Errorf("xai executor: close response body error: %v", errClose)
+		}
+	}()
+
+	// Buffer the full upstream SSE before returning to the client so we can
+	// reject missing/zero Think streams and retry another credential.
+	scanner := bufio.NewScanner(httpResp.Body)
+	scanner.Buffer(nil, 52_428_800)
+	var rawLines [][]byte
+	for scanner.Scan() {
+		line := bytes.Clone(scanner.Bytes())
+		helps.AppendAPIResponseChunk(ctx, e.cfg, line)
+		rawLines = append(rawLines, line)
+	}
+	if errScan := scanner.Err(); errScan != nil {
+		helps.RecordAPIResponseError(ctx, e.cfg, errScan)
+		reporter.PublishFailure(ctx, errScan)
+		return nil, errScan
+	}
+
+	claudeInputTokens := helps.NewClaudeInputTokenState(prepared.from, prepared.to, prepared.responseFormat, prepared.originalPayload)
+	var param any
+	outputItemsByIndex := make(map[int64][]byte)
+	var outputItemsFallback [][]byte
+	responseFilter := newXAIInternalXSearchResponseFilter(prepared.filterInternalXSearch, prepared.clientDeclaredTools)
+	var pendingEventLine []byte
+	var translatedChunks [][]byte
+	var completedData []byte
+	emitTranslatedLine := func(translatedLine []byte) {
+		chunks := helps.TranslateStreamWithClaudeInputTokens(ctx, prepared.to, prepared.responseFormat, req.Model, prepared.originalPayload, prepared.body, translatedLine, &param, claudeInputTokens)
+		translatedChunks = append(translatedChunks, chunks...)
+	}
+
+	for _, line := range rawLines {
+		if bytes.HasPrefix(line, xaiEventTag) {
+			if pendingEventLine != nil {
+				emitTranslatedLine(xaiNormalizeReasoningSummaryEventLine(pendingEventLine, ""))
+			}
+			pendingEventLine = bytes.Clone(line)
+			continue
+		}
+
+		if bytes.HasPrefix(line, xaiDataTag) {
+			eventDataList := xaiNormalizeReasoningSummaryDataEvents(bytes.TrimSpace(line[len(xaiDataTag):]))
+			hasPendingEventLine := pendingEventLine != nil
+			for i, eventData := range eventDataList {
+				eventData = restoreXAINamespaceToolCalls(eventData, prepared.namespaceTools)
+				eventData = responseFilter.apply(eventData)
+				if len(eventData) == 0 {
+					if hasPendingEventLine && i == 0 {
+						pendingEventLine = nil
+					}
+					continue
+				}
+				normalizedEventName := gjson.GetBytes(eventData, "type").String()
+				switch normalizedEventName {
+				case "response.output_item.done":
+					xaiCollectOutputItemDone(eventData, outputItemsByIndex, &outputItemsFallback)
+				case "response.completed":
+					if detail, ok := helps.ParseCodexUsage(eventData); ok {
+						reporter.Publish(ctx, detail)
+					}
+					eventData = xaiPatchCompletedOutput(eventData, outputItemsByIndex, outputItemsFallback)
+					eventData = xaiNormalizeReasoningSummaryData(eventData)
+					cacheXAIReasoningReplayFromCompleted(ctx, prepared.replayScope, eventData)
+					completedData = bytes.Clone(eventData)
+					normalizedEventName = gjson.GetBytes(eventData, "type").String()
+				}
+
+				if hasPendingEventLine {
+					eventLine := []byte("event: " + normalizedEventName)
+					if i == 0 {
+						eventLine = xaiNormalizeReasoningSummaryEventLine(pendingEventLine, normalizedEventName)
+						pendingEventLine = nil
+					}
+					emitTranslatedLine(eventLine)
+				}
+				emitTranslatedLine(append([]byte("data: "), eventData...))
+			}
+			continue
+		}
+
+		if pendingEventLine != nil {
+			emitTranslatedLine(xaiNormalizeReasoningSummaryEventLine(pendingEventLine, ""))
+			pendingEventLine = nil
+		}
+		emitTranslatedLine(bytes.Clone(line))
+	}
+	if pendingEventLine != nil {
+		emitTranslatedLine(xaiNormalizeReasoningSummaryEventLine(pendingEventLine, ""))
+	}
+
+	rawSSE := bytes.Join(rawLines, []byte("\n"))
+	headers := httpResp.Header.Clone()
+	if errThink := xaiGateThinkStream(auth, prepared.body, rawSSE, completedData, cliproxyexecutor.Response{}, headers, translatedChunks); errThink != nil {
+		return nil, errThink
+	}
 
 	out := make(chan cliproxyexecutor.StreamChunk)
 	go func() {
 		defer close(out)
-		defer func() {
-			if errClose := httpResp.Body.Close(); errClose != nil {
-				log.Errorf("xai executor: close response body error: %v", errClose)
-			}
-		}()
-		scanner := bufio.NewScanner(httpResp.Body)
-		scanner.Buffer(nil, 52_428_800)
-		claudeInputTokens := helps.NewClaudeInputTokenState(prepared.from, prepared.to, prepared.responseFormat, prepared.originalPayload)
-		var param any
-		outputItemsByIndex := make(map[int64][]byte)
-		var outputItemsFallback [][]byte
-		responseFilter := newXAIInternalXSearchResponseFilter(prepared.filterInternalXSearch, prepared.clientDeclaredTools)
-		var pendingEventLine []byte
-		emitTranslatedLine := func(translatedLine []byte) bool {
-			chunks := helps.TranslateStreamWithClaudeInputTokens(ctx, prepared.to, prepared.responseFormat, req.Model, prepared.originalPayload, prepared.body, translatedLine, &param, claudeInputTokens)
-			for i := range chunks {
-				select {
-				case out <- cliproxyexecutor.StreamChunk{Payload: chunks[i]}:
-				case <-ctx.Done():
-					return false
-				}
-			}
-			return true
-		}
-		for scanner.Scan() {
-			line := scanner.Bytes()
-			helps.AppendAPIResponseChunk(ctx, e.cfg, line)
-
-			if bytes.HasPrefix(line, xaiEventTag) {
-				if pendingEventLine != nil && !emitTranslatedLine(xaiNormalizeReasoningSummaryEventLine(pendingEventLine, "")) {
-					return
-				}
-				pendingEventLine = bytes.Clone(line)
-				continue
-			}
-
-			if bytes.HasPrefix(line, xaiDataTag) {
-				eventDataList := xaiNormalizeReasoningSummaryDataEvents(bytes.TrimSpace(line[len(xaiDataTag):]))
-				hasPendingEventLine := pendingEventLine != nil
-				for i, eventData := range eventDataList {
-					eventData = restoreXAINamespaceToolCalls(eventData, prepared.namespaceTools)
-					eventData = responseFilter.apply(eventData)
-					if len(eventData) == 0 {
-						if hasPendingEventLine && i == 0 {
-							pendingEventLine = nil
-						}
-						continue
-					}
-					normalizedEventName := gjson.GetBytes(eventData, "type").String()
-					switch normalizedEventName {
-					case "response.output_item.done":
-						xaiCollectOutputItemDone(eventData, outputItemsByIndex, &outputItemsFallback)
-					case "response.completed":
-						if detail, ok := helps.ParseCodexUsage(eventData); ok {
-							reporter.Publish(ctx, detail)
-						}
-						eventData = xaiPatchCompletedOutput(eventData, outputItemsByIndex, outputItemsFallback)
-						eventData = xaiNormalizeReasoningSummaryData(eventData)
-						cacheXAIReasoningReplayFromCompleted(ctx, prepared.replayScope, eventData)
-						normalizedEventName = gjson.GetBytes(eventData, "type").String()
-					}
-
-					if hasPendingEventLine {
-						eventLine := []byte("event: " + normalizedEventName)
-						if i == 0 {
-							eventLine = xaiNormalizeReasoningSummaryEventLine(pendingEventLine, normalizedEventName)
-							pendingEventLine = nil
-						}
-						if !emitTranslatedLine(eventLine) {
-							return
-						}
-					}
-					if !emitTranslatedLine(append([]byte("data: "), eventData...)) {
-						return
-					}
-				}
-				continue
-			}
-
-			if pendingEventLine != nil {
-				if !emitTranslatedLine(xaiNormalizeReasoningSummaryEventLine(pendingEventLine, "")) {
-					return
-				}
-				pendingEventLine = nil
-			}
-			if !emitTranslatedLine(bytes.Clone(line)) {
+		for _, chunk := range translatedChunks {
+			select {
+			case out <- cliproxyexecutor.StreamChunk{Payload: chunk}:
+			case <-ctx.Done():
 				return
 			}
 		}
-		if pendingEventLine != nil {
-			emitTranslatedLine(xaiNormalizeReasoningSummaryEventLine(pendingEventLine, ""))
-		}
-		if errScan := scanner.Err(); errScan != nil {
-			helps.RecordAPIResponseError(ctx, e.cfg, errScan)
-			reporter.PublishFailure(ctx, errScan)
-			select {
-			case out <- cliproxyexecutor.StreamChunk{Err: errScan}:
-			case <-ctx.Done():
-			}
-		}
 	}()
-	return &cliproxyexecutor.StreamResult{Headers: httpResp.Header.Clone(), Chunks: out}, nil
+	return &cliproxyexecutor.StreamResult{Headers: headers, Chunks: out}, nil
 }

@@ -100,5 +100,6 @@ func (e *XAIExecutor) HttpRequest(ctx context.Context, auth *cliproxyauth.Auth, 
 	if errPrepare := e.PrepareRequest(httpReq, auth); errPrepare != nil {
 		return nil, errPrepare
 	}
-	return helps.HTTPUpstreamDo(ctx, e.cfg, auth, httpReq, 0)
+	helps.PrepareUpstreamForProxy(ctx, e.cfg, auth)
+	return helps.NewFreshXAIHTTPClient(ctx, e.cfg, auth, 0).Do(httpReq)
 }

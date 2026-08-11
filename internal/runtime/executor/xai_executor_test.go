@@ -4858,8 +4858,23 @@ func TestApplyXAIChatHeaders(t *testing.T) {
 		if got := req.Header.Get(xaiClientVersionHeader); got != xaiClientVersionValue {
 			t.Fatalf("%s = %q, want %q", xaiClientVersionHeader, got, xaiClientVersionValue)
 		}
-		if got := req.Header.Get("User-Agent"); got != "xai-grok-workspace/"+xaiClientVersionValue {
-			t.Fatalf("User-Agent = %q, want xai-grok-workspace/%s", got, xaiClientVersionValue)
+		if got := req.Header.Get("User-Agent"); !strings.HasPrefix(got, "grok-shell/"+xaiClientVersionValue+" (") {
+			t.Fatalf("User-Agent = %q, want grok-shell/%s (...)", got, xaiClientVersionValue)
+		}
+		if got := req.Header.Get("x-grok-client-identifier"); got != "grok-shell" {
+			t.Fatalf("x-grok-client-identifier = %q, want grok-shell", got)
+		}
+		if got := req.Header.Get("x-grok-agent-id"); got == "" {
+			t.Fatal("x-grok-agent-id missing")
+		}
+		if got := req.Header.Get("x-device-mac"); got == "" {
+			t.Fatal("x-device-mac missing")
+		}
+		if got := req.Header.Get("Connection"); got != "close" {
+			t.Fatalf("Connection = %q, want close", got)
+		}
+		if got := req.Header.Get("x-grok-session-id"); got != "conv-1" {
+			t.Fatalf("x-grok-session-id = %q, want conv-1", got)
 		}
 	})
 

@@ -63,6 +63,7 @@ func (s *Server) registerManagementRoutes() {
 
 		// Independent LLM request log API (does not replace existing logs UI).
 		mgmt.GET("/llm-request-logs", s.mgmt.GetLLMRequestLogs)
+		mgmt.DELETE("/llm-request-logs", s.mgmt.ClearLLMRequestLogs)
 
 		mgmt.GET("/proxy-url", s.mgmt.GetProxyURL)
 		mgmt.PUT("/proxy-url", s.mgmt.PutProxyURL)
@@ -167,6 +168,7 @@ func (s *Server) registerManagementRoutes() {
 		mgmt.DELETE("/auth-files", s.mgmt.DeleteAuthFile)
 		mgmt.PATCH("/auth-files/status", s.mgmt.PatchAuthFileStatus)
 		mgmt.PATCH("/auth-files/fields", s.mgmt.PatchAuthFileFields)
+		mgmt.POST("/auth-files/refresh", s.mgmt.PostAuthFilesRefresh)
 		mgmt.POST("/vertex/import", s.mgmt.ImportVertexCredential)
 
 		mgmt.GET("/anthropic-auth-url", s.mgmt.RequestAnthropicToken)

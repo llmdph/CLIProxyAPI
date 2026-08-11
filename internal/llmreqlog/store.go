@@ -109,7 +109,10 @@ func (s *store) list(limit, offset int) (items []Entry, total int) {
 	defer s.mu.RUnlock()
 	total = len(s.items)
 	if limit <= 0 {
-		limit = 100
+		limit = 50
+	}
+	if limit > 200 {
+		limit = 200
 	}
 	if offset < 0 {
 		offset = 0
@@ -126,12 +129,36 @@ func (s *store) list(limit, offset int) (items []Entry, total int) {
 	chunk := s.items[start:end]
 	out := make([]Entry, len(chunk))
 	for i := range chunk {
-		out[len(chunk)-1-i] = chunk[i]
+		entry := chunk[i]
+		if detail, ok := entry.Detail.(map[string]any); ok && detail != nil {
+			copied := make(map[string]any, len(detail))
+			for k, v := range detail {
+				copied[k] = v
+			}
+			entry.Detail = copied
+		}
+		out[len(chunk)-1-i] = entry
 	}
 	return out, total
+}
+
+func (s *store) clear() int {
+	if s == nil {
+		return 0
+	}
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	n := len(s.items)
+	s.items = make([]Entry, 0, s.capacity)
+	return n
 }
 
 // List returns newest-first entries.
 func List(limit, offset int) ([]Entry, int) {
 	return defaultStore.list(limit, offset)
+}
+
+// Clear removes all stored LLM request log entries and returns how many were dropped.
+func Clear() int {
+	return defaultStore.clear()
 }

@@ -308,7 +308,9 @@ func applyXAICustomHeaders(r *http.Request, auth *cliproxyauth.Auth) {
 // requests. When using_api is true, this matches the standard
 // applyXAIHeaders behavior. CLI chat-proxy identity headers are only attached
 // when using_api is false and the resolved chat base URL is the official CLI
-// chat-proxy endpoint.
+// chat-proxy endpoint. Device/MAC/agent fingerprints stick per auth account and
+// only change when the conductor rotates to another account; request ids still
+// rotate every call.
 func applyXAIChatHeaders(r *http.Request, auth *cliproxyauth.Auth, token string, stream bool, sessionID string) {
 	if xaiUsingAPI(auth) {
 		applyXAIHeaders(r, auth, token, stream, sessionID)
@@ -316,9 +318,17 @@ func applyXAIChatHeaders(r *http.Request, auth *cliproxyauth.Auth, token string,
 	}
 	applyXAIDefaultHeaders(r, token, stream, sessionID)
 	if xaiIsCLIChatProxyBaseURL(xaiChatBaseURL(auth)) {
-		r.Header.Set(xaiTokenAuthHeader, xaiTokenAuthValue)
-		r.Header.Set(xaiClientVersionHeader, xaiClientVersionValue)
-		r.Header.Set("User-Agent", "xai-grok-workspace/"+xaiClientVersionValue)
+		authID := ""
+		if auth != nil {
+			authID = auth.ID
+		}
+		identity := xaiIdentityForAuth(authID)
+		applyXAIFreshClientIdentity(r, identity, true)
+		// Keep conversation affinity stable when the executor already resolved a session.
+		if sessionID != "" {
+			r.Header.Set("x-grok-conv-id", sessionID)
+			r.Header.Set("x-grok-session-id", sessionID)
+		}
 	}
 	applyXAICustomHeaders(r, auth)
 }

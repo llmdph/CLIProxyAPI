@@ -127,7 +127,7 @@ func (m *Manager) wrapStreamResult(ctx context.Context, auth *Auth, provider, re
 			if chunk.Err != nil && !failed {
 				failed = true
 				rerr := resultErrorFromError(chunk.Err)
-				m.recordExecutionResult(ctx, Result{AuthID: auth.ID, Provider: provider, Model: resultModel, Success: false, Error: rerr}, auth, ephemeralResult)
+				m.recordXAIAwareExecutionResult(ctx, Result{AuthID: auth.ID, Provider: provider, Model: resultModel, Success: false, Error: rerr}, auth, provider, chunk.Err, ephemeralResult)
 			}
 			if !forward {
 				return false
@@ -268,8 +268,11 @@ func (m *Manager) executeStreamWithModelPool(ctx context.Context, executor Provi
 			rerr := resultErrorFromError(errStream)
 			result := Result{AuthID: auth.ID, Provider: provider, Model: resultModel, Success: false, Error: rerr}
 			result.RetryAfter = retryAfterFromError(errStream)
-			m.recordExecutionResult(ctx, result, auth, ephemeralResult)
+			m.recordXAIAwareExecutionResult(ctx, result, auth, provider, errStream, ephemeralResult)
 			if isRequestInvalidError(errStream) {
+				return nil, errStream
+			}
+			if isXAIProvider(provider) && !shouldRotateXAICredential(errStream) {
 				return nil, errStream
 			}
 			lastErr = errStream
@@ -328,15 +331,19 @@ func (m *Manager) executeStreamWithModelPool(ctx context.Context, executor Provi
 				rerr := resultErrorFromError(bootstrapErr)
 				result := Result{AuthID: auth.ID, Provider: provider, Model: resultModel, Success: false, Error: rerr}
 				result.RetryAfter = retryAfterFromError(bootstrapErr)
-				m.recordExecutionResult(ctx, result, auth, ephemeralResult)
+				m.recordXAIAwareExecutionResult(ctx, result, auth, provider, bootstrapErr, ephemeralResult)
 				discardStreamChunks(streamResult.Chunks)
 				return nil, bootstrapErr
+			}
+			if isXAIProvider(provider) && !shouldRotateXAICredential(bootstrapErr) {
+				discardStreamChunks(streamResult.Chunks)
+				return nil, newStreamBootstrapError(bootstrapErr, streamResult.Headers)
 			}
 			if idx < len(execModels)-1 {
 				rerr := resultErrorFromError(bootstrapErr)
 				result := Result{AuthID: auth.ID, Provider: provider, Model: resultModel, Success: false, Error: rerr}
 				result.RetryAfter = retryAfterFromError(bootstrapErr)
-				m.recordExecutionResult(ctx, result, auth, ephemeralResult)
+				m.recordXAIAwareExecutionResult(ctx, result, auth, provider, bootstrapErr, ephemeralResult)
 				discardStreamChunks(streamResult.Chunks)
 				lastErr = bootstrapErr
 				continue
@@ -344,13 +351,17 @@ func (m *Manager) executeStreamWithModelPool(ctx context.Context, executor Provi
 			rerr := resultErrorFromError(bootstrapErr)
 			result := Result{AuthID: auth.ID, Provider: provider, Model: resultModel, Success: false, Error: rerr}
 			result.RetryAfter = retryAfterFromError(bootstrapErr)
-			m.recordExecutionResult(ctx, result, auth, ephemeralResult)
+			m.recordXAIAwareExecutionResult(ctx, result, auth, provider, bootstrapErr, ephemeralResult)
 			discardStreamChunks(streamResult.Chunks)
 			return nil, newStreamBootstrapError(bootstrapErr, streamResult.Headers)
 		}
 
 		if closed && len(buffered) == 0 {
 			emptyErr := &Error{Code: "empty_stream", Message: "upstream stream closed before first payload", Retryable: true}
+			if isXAIProvider(provider) {
+				// Empty stream is not quota/no-think; keep the sticky account.
+				return nil, newStreamBootstrapError(emptyErr, streamResult.Headers)
+			}
 			result := Result{AuthID: auth.ID, Provider: provider, Model: resultModel, Success: false, Error: emptyErr}
 			m.recordExecutionResult(ctx, result, auth, ephemeralResult)
 			if idx < len(execModels)-1 {

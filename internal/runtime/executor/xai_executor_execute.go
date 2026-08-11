@@ -51,7 +51,7 @@ func (e *XAIExecutor) Execute(ctx context.Context, auth *cliproxyauth.Auth, req 
 	e.recordXAIRequest(ctx, auth, url, httpReq.Header.Clone(), prepared.body)
 
 	helps.PrepareUpstreamForProxy(ctx, e.cfg, auth)
-	httpClient := helps.NewProxyAwareHTTPClient(ctx, e.cfg, auth, 0)
+	httpClient := helps.NewFreshXAIHTTPClient(ctx, e.cfg, auth, 0)
 	httpClient = reporter.TrackHTTPClient(httpClient)
 	httpResp, err := httpClient.Do(httpReq)
 	if err != nil {
@@ -107,7 +107,11 @@ func (e *XAIExecutor) Execute(ctx context.Context, auth *cliproxyauth.Auth, req 
 			cacheXAIReasoningReplayFromCompleted(ctx, prepared.replayScope, completedData)
 			var param any
 			out := sdktranslator.TranslateNonStream(ctx, prepared.to, prepared.responseFormat, req.Model, prepared.originalPayload, prepared.body, completedData, &param)
-			return cliproxyexecutor.Response{Payload: out, Headers: httpResp.Header.Clone()}, nil
+			respOut := cliproxyexecutor.Response{Payload: out, Headers: httpResp.Header.Clone()}
+			if errThink := xaiGateThinkStream(auth, prepared.body, data, completedData, respOut, nil, nil); errThink != nil {
+				return respOut, errThink
+			}
+			return respOut, nil
 		}
 	}
 

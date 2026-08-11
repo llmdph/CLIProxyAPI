@@ -10,7 +10,7 @@ import (
 
 // GetLLMRequestLogs returns recent LLM request log rows for the standalone page.
 func (h *Handler) GetLLMRequestLogs(c *gin.Context) {
-	limit, _ := strconv.Atoi(c.DefaultQuery("limit", "100"))
+	limit, _ := strconv.Atoi(c.DefaultQuery("limit", "50"))
 	offset, _ := strconv.Atoi(c.DefaultQuery("offset", "0"))
 	items, total := llmreqlog.List(limit, offset)
 	c.JSON(http.StatusOK, gin.H{
@@ -18,5 +18,14 @@ func (h *Handler) GetLLMRequestLogs(c *gin.Context) {
 		"total":  total,
 		"limit":  limit,
 		"offset": offset,
+	})
+}
+
+// ClearLLMRequestLogs removes all in-memory LLM request log rows.
+func (h *Handler) ClearLLMRequestLogs(c *gin.Context) {
+	cleared := llmreqlog.Clear()
+	c.JSON(http.StatusOK, gin.H{
+		"ok":      true,
+		"cleared": cleared,
 	})
 }
