@@ -802,6 +802,46 @@ func TestEnsureXAINativeXSearchTool(t *testing.T) {
 	}
 }
 
+func TestXAIExecutorPrepareNormalizesClaudeWebSearchToolChoice(t *testing.T) {
+	t.Parallel()
+
+	exec := NewXAIExecutor(&config.Config{})
+	prepared, errPrepare := exec.prepareResponsesRequest(context.Background(), cliproxyexecutor.Request{
+		Model: "grok-4.5",
+		Payload: []byte(`{
+			"model":"grok-4.5",
+			"max_tokens":4096,
+			"stream":true,
+			"output_config":{"effort":"high"},
+			"thinking":{"type":"disabled"},
+			"messages":[{"role":"user","content":[{"type":"text","text":"Perform a web search"}]}],
+			"tool_choice":{"type":"tool","name":"web_search"},
+			"tools":[{"type":"web_search_20250305","name":"web_search","max_uses":8}]
+		}`),
+	}, cliproxyexecutor.Options{
+		SourceFormat: sdktranslator.FormatClaude,
+		Stream:       true,
+	}, true)
+	if errPrepare != nil {
+		t.Fatalf("prepareResponsesRequest() error = %v", errPrepare)
+	}
+
+	choice := gjson.GetBytes(prepared.body, "tool_choice")
+	if got := choice.Get("type").String(); got != "allowed_tools" {
+		t.Fatalf("tool_choice.type = %q, want allowed_tools; body=%s", got, prepared.body)
+	}
+	if got := choice.Get("mode").String(); got != "required" {
+		t.Fatalf("tool_choice.mode = %q, want required; body=%s", got, prepared.body)
+	}
+	allowed := choice.Get("tools").Array()
+	if len(allowed) != 1 {
+		t.Fatalf("tool_choice.tools length = %d, want 1; body=%s", len(allowed), prepared.body)
+	}
+	if got := allowed[0].Get("type").String(); got != "web_search" {
+		t.Fatalf("tool_choice.tools.0.type = %q, want web_search; body=%s", got, prepared.body)
+	}
+}
+
 func TestPruneXAIOrphanedToolChoice(t *testing.T) {
 	t.Parallel()
 
@@ -4831,6 +4871,11 @@ func TestApplyXAIChatHeaders(t *testing.T) {
 		if got := req.Header.Get(xaiClientVersionHeader); got != "" {
 			t.Fatalf("%s = %q, want empty for official API", xaiClientVersionHeader, got)
 		}
+		for _, header := range []string{"x-grok-client-identifier", "x-authenticateresponse"} {
+			if got := req.Header.Get(header); got != "" {
+				t.Fatalf("%s = %q, want empty for official API", header, got)
+			}
+		}
 		if got := req.Header.Get("User-Agent"); got != "" {
 			t.Fatalf("User-Agent = %q, want empty for official API", got)
 		}
@@ -4864,6 +4909,9 @@ func TestApplyXAIChatHeaders(t *testing.T) {
 		if got := req.Header.Get("x-grok-client-identifier"); got != "grok-shell" {
 			t.Fatalf("x-grok-client-identifier = %q, want grok-shell", got)
 		}
+		if got := req.Header.Get("x-authenticateresponse"); got != "authenticate-response" {
+			t.Fatalf("x-authenticateresponse = %q, want authenticate-response", got)
+		}
 		if got := req.Header.Get("x-grok-agent-id"); got == "" {
 			t.Fatal("x-grok-agent-id missing")
 		}
@@ -4894,6 +4942,11 @@ func TestApplyXAIChatHeaders(t *testing.T) {
 		if got := req.Header.Get(xaiClientVersionHeader); got != "" {
 			t.Fatalf("%s = %q, want empty for custom gateway", xaiClientVersionHeader, got)
 		}
+		for _, header := range []string{"x-grok-client-identifier", "x-authenticateresponse"} {
+			if got := req.Header.Get(header); got != "" {
+				t.Fatalf("%s = %q, want empty for custom gateway", header, got)
+			}
+		}
 		if got := req.Header.Get("User-Agent"); got != "" {
 			t.Fatalf("User-Agent = %q, want empty for custom gateway", got)
 		}
@@ -4907,6 +4960,8 @@ func TestApplyXAIChatHeaders(t *testing.T) {
 				xaiUsingAPIAttr:                    "false",
 				"header:" + xaiTokenAuthHeader:     "custom-token-auth",
 				"header:" + xaiClientVersionHeader: "custom-client-version",
+				"header:x-grok-client-identifier":  "custom-client-identifier",
+				"header:x-authenticateresponse":    "custom-authenticate-response",
 			},
 		}
 		applyXAIChatHeaders(req, auth, "xai-token", true, "")
@@ -4916,6 +4971,12 @@ func TestApplyXAIChatHeaders(t *testing.T) {
 		}
 		if got := req.Header.Get(xaiClientVersionHeader); got != "custom-client-version" {
 			t.Fatalf("%s = %q, want custom-client-version", xaiClientVersionHeader, got)
+		}
+		if got := req.Header.Get("x-grok-client-identifier"); got != "custom-client-identifier" {
+			t.Fatalf("x-grok-client-identifier = %q, want custom-client-identifier", got)
+		}
+		if got := req.Header.Get("x-authenticateresponse"); got != "custom-authenticate-response" {
+			t.Fatalf("x-authenticateresponse = %q, want custom-authenticate-response", got)
 		}
 	})
 
