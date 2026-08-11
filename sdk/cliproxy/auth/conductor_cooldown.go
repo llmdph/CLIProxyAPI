@@ -1452,10 +1452,20 @@ func isModelSupportResultError(err *Error) bool {
 
 func isCloudflareChallengeErrorMessage(message string) bool {
 	lower := strings.ToLower(strings.TrimSpace(message))
-	return strings.Contains(lower, "challenge-platform") ||
+	if lower == "" {
+		return false
+	}
+	if strings.Contains(lower, "challenge-platform") ||
 		strings.Contains(lower, "cf-mitigated") ||
 		strings.Contains(lower, "cloudflare challenge") ||
-		(strings.Contains(lower, "cloudflare") && strings.Contains(lower, "<html"))
+		strings.Contains(lower, "just a moment") ||
+		strings.Contains(lower, "attention required") ||
+		strings.Contains(lower, "cf-ray") ||
+		strings.Contains(lower, "cdn-cgi/challenge") ||
+		strings.Contains(lower, "enable javascript and cookies to continue") {
+		return true
+	}
+	return strings.Contains(lower, "cloudflare") && (strings.Contains(lower, "<html") || strings.Contains(lower, "<!doctype"))
 }
 
 func isCloudflareChallengeError(err error) bool {

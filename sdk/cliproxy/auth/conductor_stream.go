@@ -258,6 +258,18 @@ func (m *Manager) executeStreamWithModelPool(ctx context.Context, executor Provi
 				}
 			}
 		}
+		// Cloudflare challenge: keep the same Grok credential and retry immediately.
+		if isXAIProvider(provider) {
+			for cfAttempt := 1; errStream != nil && isCloudflareChallengeError(errStream) && cfAttempt < xaiCloudflareSameAuthMaxAttempts; cfAttempt++ {
+				logEntryWithRequestID(ctx).Debugf("xai: cloudflare challenge on auth %s stream, same-account retry %d/%d", auth.ID, cfAttempt+1, xaiCloudflareSameAuthMaxAttempts)
+				streamResult, errStream = executor.ExecuteStream(ctx, auth, execReq, execOpts)
+				if errStream != nil {
+					if errCtx := ctx.Err(); errCtx != nil {
+						return nil, errCtx
+					}
+				}
+			}
+		}
 		if !ephemeralResult {
 			if errCancel := claudeOAuthRequestCancellation(ctx, auth, errStream); errCancel != nil {
 				return nil, errCancel

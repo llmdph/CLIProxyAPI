@@ -10,6 +10,7 @@ import (
 	"strconv"
 	"strings"
 	"sync"
+	"time"
 
 	"github.com/router-for-me/CLIProxyAPI/v7/internal/logging"
 	"github.com/router-for-me/CLIProxyAPI/v7/internal/util"
@@ -376,6 +377,19 @@ func (m *Manager) executeMixedOnce(ctx context.Context, providers []string, req 
 					}
 				}
 			}
+			// Cloudflare challenge (often HTTP 400 HTML) must stay on the same
+			// Grok account and retry immediately; only return after 3 failures.
+			if isXAIProvider(provider) {
+				for cfAttempt := 1; errExec != nil && isCloudflareChallengeError(errExec) && cfAttempt < xaiCloudflareSameAuthMaxAttempts; cfAttempt++ {
+					logEntryWithRequestID(execCtx).Debugf("xai: cloudflare challenge on auth %s, same-account retry %d/%d", auth.ID, cfAttempt+1, xaiCloudflareSameAuthMaxAttempts)
+					resp, errExec = executor.Execute(execCtx, auth, execReq, execOpts)
+					if errExec != nil {
+						if errCtx := execCtx.Err(); errCtx != nil {
+							return cliproxyexecutor.Response{}, errCtx
+						}
+					}
+				}
+			}
 			if errCancel := claudeOAuthRequestCancellation(execCtx, auth, errExec); errCancel != nil {
 				return cliproxyexecutor.Response{}, errCancel
 			}
@@ -537,6 +551,17 @@ func (m *Manager) executeCountMixedOnce(ctx context.Context, providers []string,
 				if refreshed, okRefresh := m.tryRefreshAfterUnauthorized(execCtx, auth, errExec, didRefreshOnUnauthorized); okRefresh {
 					auth = refreshed
 					didRefreshOnUnauthorized = true
+					resp, errExec = executor.CountTokens(execCtx, auth, execReq, execOpts)
+					if errExec != nil {
+						if errCtx := execCtx.Err(); errCtx != nil {
+							return cliproxyexecutor.Response{}, errCtx
+						}
+					}
+				}
+			}
+			if isXAIProvider(provider) {
+				for cfAttempt := 1; errExec != nil && isCloudflareChallengeError(errExec) && cfAttempt < xaiCloudflareSameAuthMaxAttempts; cfAttempt++ {
+					logEntryWithRequestID(execCtx).Debugf("xai: cloudflare challenge on auth %s count_tokens, same-account retry %d/%d", auth.ID, cfAttempt+1, xaiCloudflareSameAuthMaxAttempts)
 					resp, errExec = executor.CountTokens(execCtx, auth, execReq, execOpts)
 					if errExec != nil {
 						if errCtx := execCtx.Err(); errCtx != nil {
@@ -859,8 +884,11 @@ func (m *Manager) disableAuthForNoThink(ctx context.Context, auth *Auth, noThink
 	if clone == nil {
 		return
 	}
+	now := time.Now()
 	clone.Disabled = true
 	clone.Status = StatusDisabled
+	clone.UpdatedAt = now
+	clone.NextRetryAfter = now.Add(xaiDisabledAutoReenableAfter)
 	detail := "no_think_stream"
 	if noThink != nil && strings.TrimSpace(noThink.Detail) != "" {
 		detail = "no_think_stream: " + strings.TrimSpace(noThink.Detail)
