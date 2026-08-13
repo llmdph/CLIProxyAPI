@@ -2693,6 +2693,27 @@
       "max_completion_tokens": 256000
     },
     {
+      "id": "grok-4.6",
+      "object": "model",
+      "created": 1786464000,
+      "owned_by": "xai",
+      "type": "xai",
+      "display_name": "Grok 4.6",
+      "name": "grok-4.6",
+      "description": "xAI Grok 4.6 model with Extra high (xhigh) reasoning effort for Chat Completions, Responses, and Messages forwarding.",
+      "context_length": 500000,
+      "max_completion_tokens": 65536,
+      "thinking": {
+        "zero_allowed": false,
+        "levels": [
+          "low",
+          "medium",
+          "high",
+          "xhigh"
+        ]
+      }
+    },
+    {
       "id": "grok-4.5",
       "object": "model",
       "created": 1783526400,

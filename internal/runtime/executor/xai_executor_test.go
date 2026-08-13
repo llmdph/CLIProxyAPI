@@ -2253,6 +2253,8 @@ func TestXAISupportsReasoningEffortUsesModelRegistry(t *testing.T) {
 		want  bool
 	}{
 		{name: "grok-4.5", model: "grok-4.5", want: true},
+		{name: "grok-4.6", model: "grok-4.6", want: true},
+		{name: "grok-4.6 with xhigh suffix", model: "grok-4.6(xhigh)", want: true},
 		{name: "grok-4.5 with suffix", model: "grok-4.5(high)", want: true},
 		{name: "grok-4.3", model: "grok-4.3", want: true},
 		{name: "grok-3-mini", model: "grok-3-mini", want: true},
@@ -2275,44 +2277,23 @@ func TestXAISupportsReasoningEffortUsesModelRegistry(t *testing.T) {
 }
 
 func TestXAIExecutorKeepsReasoningEffortForGrok45(t *testing.T) {
-	var gotBody []byte
-	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		var errRead error
-		gotBody, errRead = io.ReadAll(r.Body)
-		if errRead != nil {
-			t.Fatalf("read body: %v", errRead)
-		}
-		w.Header().Set("Content-Type", "text/event-stream")
-		_, _ = w.Write([]byte("data: {\"type\":\"response.completed\",\"response\":{\"id\":\"resp_1\",\"object\":\"response\",\"created_at\":0,\"status\":\"completed\",\"model\":\"grok-4.5\",\"output\":[{\"type\":\"message\",\"role\":\"assistant\",\"content\":[{\"type\":\"output_text\",\"text\":\"ok\"}]}]}}\n\n"))
-	}))
-	defer server.Close()
-
+	t.Parallel()
 	exec := NewXAIExecutor(&config.Config{})
-	auth := &cliproxyauth.Auth{
-		Provider: "xai",
-		Attributes: map[string]string{
-			"base_url":  server.URL,
-			"auth_kind": "oauth",
-		},
-		Metadata: map[string]any{"access_token": "xai-token"},
-	}
-
-	_, err := exec.Execute(context.Background(), auth, cliproxyexecutor.Request{
+	prepared, err := exec.prepareResponsesRequest(context.Background(), cliproxyexecutor.Request{
 		Model:   "grok-4.5",
 		Payload: []byte(`{"model":"grok-4.5","input":"hello","reasoning":{"effort":"high"}}`),
 	}, cliproxyexecutor.Options{
 		SourceFormat: sdktranslator.FormatOpenAIResponse,
 		Stream:       false,
-	})
+	}, false)
 	if err != nil {
-		t.Fatalf("Execute() error = %v", err)
+		t.Fatalf("prepareResponsesRequest() error = %v", err)
 	}
-
-	if got := gjson.GetBytes(gotBody, "model").String(); got != "grok-4.5" {
-		t.Fatalf("model = %q, want grok-4.5; body=%s", got, string(gotBody))
+	if got := gjson.GetBytes(prepared.body, "model").String(); got != "grok-4.5" {
+		t.Fatalf("model = %q, want grok-4.5; body=%s", got, prepared.body)
 	}
-	if got := gjson.GetBytes(gotBody, "reasoning.effort").String(); got != "high" {
-		t.Fatalf("reasoning.effort = %q, want high; body=%s", got, string(gotBody))
+	if got := gjson.GetBytes(prepared.body, "reasoning.effort").String(); got != "high" {
+		t.Fatalf("reasoning.effort = %q, want high; body=%s", got, prepared.body)
 	}
 }
 
@@ -2365,44 +2346,79 @@ func TestXAIExecutorKeepsPayloadOverrideReasoningEffortForGrok45(t *testing.T) {
 }
 
 func TestXAIExecutorAppliesThinkingSuffix(t *testing.T) {
-	var gotBody []byte
-	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		var errRead error
-		gotBody, errRead = io.ReadAll(r.Body)
-		if errRead != nil {
-			t.Fatalf("read body: %v", errRead)
-		}
-		w.Header().Set("Content-Type", "text/event-stream")
-		_, _ = w.Write([]byte("data: {\"type\":\"response.completed\",\"response\":{\"id\":\"resp_1\",\"object\":\"response\",\"created_at\":0,\"status\":\"completed\",\"model\":\"grok-4.3\",\"output\":[{\"type\":\"message\",\"role\":\"assistant\",\"content\":[{\"type\":\"output_text\",\"text\":\"ok\"}]}]}}\n\n"))
-	}))
-	defer server.Close()
-
+	t.Parallel()
 	exec := NewXAIExecutor(&config.Config{})
-	auth := &cliproxyauth.Auth{
-		Provider: "xai",
-		Attributes: map[string]string{
-			"base_url":  server.URL,
-			"auth_kind": "oauth",
-		},
-		Metadata: map[string]any{"access_token": "xai-token"},
-	}
-
-	_, err := exec.Execute(context.Background(), auth, cliproxyexecutor.Request{
+	prepared, err := exec.prepareResponsesRequest(context.Background(), cliproxyexecutor.Request{
 		Model:   "grok-4.3(low)",
 		Payload: []byte(`{"model":"grok-4.3","input":"hello"}`),
 	}, cliproxyexecutor.Options{
 		SourceFormat: sdktranslator.FormatOpenAIResponse,
 		Stream:       false,
-	})
+	}, false)
 	if err != nil {
-		t.Fatalf("Execute() error = %v", err)
+		t.Fatalf("prepareResponsesRequest() error = %v", err)
+	}
+	if got := gjson.GetBytes(prepared.body, "model").String(); got != "grok-4.3" {
+		t.Fatalf("model = %q, want grok-4.3; body=%s", got, prepared.body)
+	}
+	if got := gjson.GetBytes(prepared.body, "reasoning.effort").String(); got != "low" {
+		t.Fatalf("reasoning.effort = %q, want low; body=%s", got, prepared.body)
+	}
+}
+
+func TestXAIExecutorKeepsXHighReasoningEffortForGrok46(t *testing.T) {
+	t.Parallel()
+	exec := NewXAIExecutor(&config.Config{})
+
+	// Responses API body already uses reasoning.effort.
+	prepared, err := exec.prepareResponsesRequest(context.Background(), cliproxyexecutor.Request{
+		Model:   "grok-4.6",
+		Payload: []byte(`{"model":"grok-4.6","input":"hello","reasoning":{"effort":"xhigh"}}`),
+	}, cliproxyexecutor.Options{
+		SourceFormat: sdktranslator.FormatOpenAIResponse,
+		Stream:       false,
+	}, false)
+	if err != nil {
+		t.Fatalf("prepareResponsesRequest(responses) error = %v", err)
+	}
+	if got := gjson.GetBytes(prepared.body, "model").String(); got != "grok-4.6" {
+		t.Fatalf("responses model = %q, want grok-4.6; body=%s", got, prepared.body)
+	}
+	if got := gjson.GetBytes(prepared.body, "reasoning.effort").String(); got != "xhigh" {
+		t.Fatalf("responses reasoning.effort = %q, want xhigh; body=%s", got, prepared.body)
 	}
 
-	if got := gjson.GetBytes(gotBody, "model").String(); got != "grok-4.3" {
-		t.Fatalf("model = %q, want grok-4.3; body=%s", got, string(gotBody))
+	// Chat Completions: reasoning_effort=xhigh maps into Responses reasoning.effort.
+	prepared, err = exec.prepareResponsesRequest(context.Background(), cliproxyexecutor.Request{
+		Model:   "grok-4.6",
+		Payload: []byte(`{"model":"grok-4.6","messages":[{"role":"user","content":"hello"}],"reasoning_effort":"xhigh"}`),
+	}, cliproxyexecutor.Options{
+		SourceFormat: sdktranslator.FormatOpenAI,
+		Stream:       false,
+	}, false)
+	if err != nil {
+		t.Fatalf("prepareResponsesRequest(completions) error = %v", err)
 	}
-	if got := gjson.GetBytes(gotBody, "reasoning.effort").String(); got != "low" {
-		t.Fatalf("reasoning.effort = %q, want low; body=%s", got, string(gotBody))
+	if got := gjson.GetBytes(prepared.body, "reasoning.effort").String(); got != "xhigh" {
+		t.Fatalf("completions reasoning.effort = %q, want xhigh; body=%s", got, prepared.body)
+	}
+
+	// Claude Messages via model suffix xhigh.
+	prepared, err = exec.prepareResponsesRequest(context.Background(), cliproxyexecutor.Request{
+		Model:   "grok-4.6(xhigh)",
+		Payload: []byte(`{"model":"grok-4.6","max_tokens":64,"messages":[{"role":"user","content":"hello"}]}`),
+	}, cliproxyexecutor.Options{
+		SourceFormat: sdktranslator.FormatClaude,
+		Stream:       false,
+	}, false)
+	if err != nil {
+		t.Fatalf("prepareResponsesRequest(messages) error = %v", err)
+	}
+	if got := gjson.GetBytes(prepared.body, "model").String(); got != "grok-4.6" {
+		t.Fatalf("messages model = %q, want grok-4.6; body=%s", got, prepared.body)
+	}
+	if got := gjson.GetBytes(prepared.body, "reasoning.effort").String(); got != "xhigh" {
+		t.Fatalf("messages reasoning.effort = %q, want xhigh; body=%s", got, prepared.body)
 	}
 }
 
