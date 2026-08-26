@@ -78,7 +78,11 @@ func (m *Manager) Register(ctx context.Context, auth *Auth) (*Auth, error) {
 	}
 	now := time.Now()
 	cooldownStateChanged := normalizeModelStates(auth)
-	if (m.cooldownDisabledForAuth(auth) || auth.Disabled || auth.Status == StatusDisabled) && !shouldPreserveXAIAutoDisableSchedule(auth) {
+	preserveXAIAutoDisable := shouldKeepXAIAutoDisableSchedule(auth)
+	if preserveXAIAutoDisable {
+		syncXAIAutoDisableMetadata(auth)
+	}
+	if !preserveXAIAutoDisable && (m.cooldownDisabledForAuth(auth) || auth.Disabled || auth.Status == StatusDisabled) {
 		cooldownStateChanged = clearCooldownStateForAuth(auth, now) || cooldownStateChanged
 	}
 	auth.EnsureIndex()
@@ -138,7 +142,11 @@ func (m *Manager) Update(ctx context.Context, auth *Auth) (*Auth, error) {
 	}
 	now := time.Now()
 	cooldownStateChanged := normalizeModelStates(auth)
-	if (m.cooldownDisabledForAuth(auth) || auth.Disabled || auth.Status == StatusDisabled) && !shouldPreserveXAIAutoDisableSchedule(auth) {
+	preserveXAIAutoDisable := shouldKeepXAIAutoDisableSchedule(auth)
+	if preserveXAIAutoDisable {
+		syncXAIAutoDisableMetadata(auth)
+	}
+	if !preserveXAIAutoDisable && (m.cooldownDisabledForAuth(auth) || auth.Disabled || auth.Status == StatusDisabled) {
 		cooldownStateChanged = clearCooldownStateForAuth(auth, now) || cooldownStateChanged
 	}
 	auth.EnsureIndex()

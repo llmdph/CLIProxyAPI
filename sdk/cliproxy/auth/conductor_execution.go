@@ -44,6 +44,8 @@ func claudeOAuthRequestCancellation(ctx context.Context, auth *Auth, err error) 
 // It supports multiple providers for the same model and round-robins the starting provider per model.
 func (m *Manager) Execute(ctx context.Context, providers []string, req cliproxyexecutor.Request, opts cliproxyexecutor.Options) (cliproxyexecutor.Response, error) {
 	req, opts = cliproxysession.Enrich(req, opts)
+	ctx, finish := m.beginFillFirstHold(ctx)
+	defer finish()
 	normalized := m.normalizeProviders(providers)
 	if len(normalized) == 0 {
 		return cliproxyexecutor.Response{}, &Error{Code: "provider_not_found", Message: "no provider supplied"}
@@ -91,6 +93,8 @@ func (m *Manager) Execute(ctx context.Context, providers []string, req cliproxye
 // It supports multiple providers for the same model and round-robins the starting provider per model.
 func (m *Manager) ExecuteCount(ctx context.Context, providers []string, req cliproxyexecutor.Request, opts cliproxyexecutor.Options) (cliproxyexecutor.Response, error) {
 	req, opts = cliproxysession.Enrich(req, opts)
+	ctx, finish := m.beginFillFirstHold(ctx)
+	defer finish()
 	normalized := m.normalizeProviders(providers)
 	if len(normalized) == 0 {
 		return cliproxyexecutor.Response{}, &Error{Code: "provider_not_found", Message: "no provider supplied"}
@@ -131,6 +135,7 @@ func (m *Manager) ExecuteCount(ctx context.Context, providers []string, req clip
 // It supports multiple providers for the same model and round-robins the starting provider per model.
 func (m *Manager) ExecuteStream(ctx context.Context, providers []string, req cliproxyexecutor.Request, opts cliproxyexecutor.Options) (*cliproxyexecutor.StreamResult, error) {
 	req, opts = cliproxysession.Enrich(req, opts)
+	ctx, finish := m.beginFillFirstHold(ctx)
 	if m.HomeEnabled() {
 		if unlockSession := m.lockHomeWebsocketSession(ctx, opts); unlockSession != nil {
 			defer unlockSession()
@@ -138,6 +143,7 @@ func (m *Manager) ExecuteStream(ctx context.Context, providers []string, req cli
 	}
 	normalized := m.normalizeProviders(providers)
 	if len(normalized) == 0 {
+		finish()
 		return nil, &Error{Code: "provider_not_found", Message: "no provider supplied"}
 	}
 
@@ -152,14 +158,16 @@ func (m *Manager) ExecuteStream(ctx context.Context, providers []string, req cli
 	for {
 		result, errStream := m.executeStreamMixedOnce(ctx, normalized, req, opts, maxRetryCredentials, &homeRetryLimit, attempt, defaultRequestRetry)
 		if errStream == nil {
-			return result, nil
+			return attachFillFirstStreamHold(result, finish), nil
 		}
 		if m.HomeEnabled() && retryRoundPending {
 			if wait, okWait := pendingHomeRetryRoundDelay(errStream, maxWait, &homeRetryLimit, pinnedAuthIDFromMetadata(opts.Metadata) == ""); okWait && m.homeRetryAllowed(attempt-1, homeRetryLimit) {
 				if retryRoundWaited {
+					finish()
 					return nil, errStream
 				}
 				if errWait := waitForCooldown(ctx, wait, maxWait); errWait != nil {
+					finish()
 					return nil, errWait
 				}
 				retryRoundWaited = true
@@ -169,6 +177,7 @@ func (m *Manager) ExecuteStream(ctx context.Context, providers []string, req cli
 		retryRoundPending = false
 		retryRoundWaited = false
 		if isRequestTerminatedError(errStream) || isRequestStopError(errStream) {
+			finish()
 			return nil, unwrapRequestStopError(errStream)
 		}
 		lastErr = errStream
@@ -177,6 +186,7 @@ func (m *Manager) ExecuteStream(ctx context.Context, providers []string, req cli
 			break
 		}
 		if errWait := waitForCooldown(ctx, wait, maxWait); errWait != nil {
+			finish()
 			return nil, errWait
 		}
 		attempt++
@@ -187,17 +197,20 @@ func (m *Manager) ExecuteStream(ctx context.Context, providers []string, req cli
 		lastErr = unwrapRequestStopError(lastErr)
 		if hasAntigravityProvider(normalized) && shouldAttemptAntigravityCreditsFallback(m, lastErr, normalized) {
 			if result, ok, errCredits := m.tryAntigravityCreditsExecuteStream(ctx, req, opts); errCredits != nil {
+				finish()
 				return nil, errCredits
 			} else if ok {
-				return result, nil
+				return attachFillFirstStreamHold(result, finish), nil
 			}
 		}
 		var bootstrapErr *streamBootstrapError
 		if errors.As(lastErr, &bootstrapErr) && bootstrapErr != nil {
-			return streamErrorResult(bootstrapErr.Headers(), lastErr), nil
+			return attachFillFirstStreamHold(streamErrorResult(bootstrapErr.Headers(), lastErr), finish), nil
 		}
+		finish()
 		return nil, lastErr
 	}
+	finish()
 	return nil, &Error{Code: "auth_not_found", Message: "no auth available"}
 }
 
@@ -439,8 +452,7 @@ func (m *Manager) executeMixedOnce(ctx context.Context, providers []string, req 
 				}
 				if errExec != nil {
 					result := Result{AuthID: auth.ID, Provider: provider, Model: resultModel, Success: false, Error: resultErrorFromError(errExec), Options: execOpts}
-					if isXAIQuotaExhaustedError(errExec) {
-						m.disableAuthForQuotaExhausted(execCtx, auth, errExec)
+					if m.disableXAIAuthIfQuotaExhausted(execCtx, auth, provider, errExec) {
 						m.MarkResult(execCtx, result)
 						authErr = errExec
 						continue
@@ -625,6 +637,15 @@ func (m *Manager) executeCountMixedOnce(ctx context.Context, providers []string,
 			}
 			if errCancel := claudeOAuthRequestCancellation(execCtx, auth, errExec); errCancel != nil {
 				return cliproxyexecutor.Response{}, errCancel
+			}
+			if errExec != nil && m.disableXAIAuthIfQuotaExhausted(execCtx, auth, provider, errExec) {
+				result := Result{AuthID: auth.ID, Provider: provider, Model: resultModel, Success: false, Error: resultErrorFromError(errExec), Options: execOpts, SkipQuotaObservation: true}
+				if ra := retryAfterFromError(errExec); ra != nil {
+					result.RetryAfter = ra
+				}
+				m.MarkResult(execCtx, result)
+				authErr = errExec
+				break
 			}
 			result := Result{AuthID: auth.ID, Provider: provider, Model: resultModel, Success: errExec == nil, Options: execOpts, SkipQuotaObservation: true}
 			if errExec != nil {
@@ -949,6 +970,18 @@ func (m *Manager) executeStreamMixedOnce(ctx context.Context, providers []string
 				if noThink, okNoThink := cliproxyexecutor.AsNoThinkStream(errStream); okNoThink {
 					m.disableAuthForNoThink(execCtx, auth, noThink)
 					result := Result{AuthID: auth.ID, Provider: provider, Model: routeModel, Success: false, Error: &Error{Code: "no_think_stream", Message: noThink.Error(), Retryable: true}, Options: execOpts}
+					m.MarkResult(execCtx, result)
+					lastErr = errStream
+					if homeMode {
+						homeAuthCount++
+					}
+					continue
+				}
+				if m.disableXAIAuthIfQuotaExhausted(execCtx, auth, provider, errStream) {
+					result := Result{AuthID: auth.ID, Provider: provider, Model: routeModel, Success: false, Error: resultErrorFromError(errStream), Options: execOpts}
+					if ra := retryAfterFromError(errStream); ra != nil {
+						result.RetryAfter = ra
+					}
 					m.MarkResult(execCtx, result)
 					lastErr = errStream
 					if homeMode {

@@ -264,8 +264,25 @@ func (c *proxyHTTPClientCache) closeAllIdle() {
 	}
 }
 
-// PrepareUpstreamForProxy optionally claims a Warp LB rotate key, drains that
-// backend, closes idle proxy connections, and kicks off async restart.
+// QuarantineWarpAfterNoThink drains and restarts the Warp node that served an
+// HTTP 200 + response.completed reply with missing Think. It waits for drain
+// so the caller can retry on a different backend. Quota / truncated streams
+// must not call this.
+func QuarantineWarpAfterNoThink(ctx context.Context, cfg *config.Config, auth *cliproxyauth.Auth) {
+	if cfg == nil {
+		return
+	}
+	base := strings.TrimSpace(cfg.WarpRotateURL)
+	if base == "" {
+		return
+	}
+	if ctx == nil {
+		ctx = context.Background()
+	}
+	warprotate.Quarantine(ctx, base, "", "http200_completed_no_think")
+	CloseIdleProxyConnections(cfg, auth)
+}
+
 func PrepareUpstreamForProxy(ctx context.Context, cfg *config.Config, auth *cliproxyauth.Auth) {
 	if cfg == nil {
 		return

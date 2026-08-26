@@ -106,6 +106,43 @@ func restartAsync(baseURL, instance, server string) {
 }
 
 // SetHTTPClientForTest overrides the short HTTP client (tests only).
+// Quarantine asks the rotate agent to drain and restart the Warp node that
+// served a degraded/no-think request. Drain happens immediately so new
+// connections skip that backend; restart is queued if another rotate is busy.
+func Quarantine(ctx context.Context, baseURL, ip, reason string) {
+	baseURL = strings.TrimRight(strings.TrimSpace(baseURL), "/")
+	if baseURL == "" {
+		return
+	}
+	if ctx == nil {
+		ctx = context.Background()
+	}
+	reqCtx, cancel := context.WithTimeout(ctx, 8*time.Second)
+	defer cancel()
+	payload, _ := json.Marshal(map[string]string{
+		"ip":     strings.TrimSpace(ip),
+		"reason": strings.TrimSpace(reason),
+	})
+	req, err := http.NewRequestWithContext(reqCtx, http.MethodPost, baseURL+"/v1/quarantine", bytes.NewReader(payload))
+	if err != nil {
+		log.Debugf("warprotate: quarantine build failed: %v", err)
+		return
+	}
+	req.Header.Set("Content-Type", "application/json")
+	resp, err := httpClient.Do(req)
+	if err != nil {
+		log.Warnf("warprotate: quarantine failed: %v", err)
+		return
+	}
+	defer resp.Body.Close()
+	body, _ := io.ReadAll(io.LimitReader(resp.Body, 4096))
+	if resp.StatusCode >= 300 {
+		log.Warnf("warprotate: quarantine status %d: %s", resp.StatusCode, strings.TrimSpace(string(body)))
+		return
+	}
+	log.Infof("warprotate: quarantine ok %s", strings.TrimSpace(string(body)))
+}
+
 func SetHTTPClientForTest(c *http.Client) {
 	if c != nil {
 		httpClient = c

@@ -164,7 +164,16 @@ func (e *XAIExecutor) ExecuteStream(ctx context.Context, auth *cliproxyauth.Auth
 
 	rawSSE := bytes.Join(rawLines, []byte("\n"))
 	headers := httpResp.Header.Clone()
+	if len(completedData) == 0 {
+		return nil, statusErr{code: http.StatusRequestTimeout, msg: "xai stream error: stream disconnected before response.completed"}
+	}
 	if errThink := xaiGateThinkStream(auth, prepared.body, rawSSE, completedData, cliproxyexecutor.Response{}, headers, translatedChunks); errThink != nil {
+		authID := ""
+		if auth != nil {
+			authID = strings.TrimSpace(auth.ID)
+		}
+		log.Warnf("xai: HTTP 200 completed without Think, quarantining warp auth=%s err=%v", authID, errThink)
+		helps.QuarantineWarpAfterNoThink(ctx, e.cfg, auth)
 		return nil, errThink
 	}
 

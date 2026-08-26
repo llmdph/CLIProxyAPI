@@ -754,7 +754,13 @@ func (m *Manager) MarkResult(ctx context.Context, result Result) {
 				clearAuthStateOnSuccess(auth, now)
 			}
 		} else {
-			if modelKey != "" {
+			if shouldKeepXAIAutoDisableSchedule(auth) {
+				if result.Error != nil {
+					auth.LastError = cloneError(result.Error)
+				}
+				auth.UpdatedAt = now
+				syncXAIAutoDisableMetadata(auth)
+			} else if modelKey != "" {
 				if !shouldSkipCredentialCooldown(result.Error) {
 					disableCooling := m.cooldownDisabledForAuth(auth)
 					if result.Error != nil && result.Error.Code == ErrorCodeForceCooldown {

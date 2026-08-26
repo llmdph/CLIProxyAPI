@@ -199,6 +199,12 @@ func synthesizeFileAuths(ctx *SynthesisContext, fullPath string, data []byte) ([
 		CreatedAt: now,
 		UpdatedAt: now,
 	}
+	// Prefer file mtime for auto-disable recovery when metadata lacks timestamps.
+	if info, errStat := os.Stat(fullPath); errStat == nil {
+		a.CreatedAt = info.ModTime()
+		a.UpdatedAt = info.ModTime()
+	}
+	coreauth.RestoreXAIAutoDisableStateFromMetadata(a)
 	// Read priority from auth file.
 	if rawPriority, ok := metadata["priority"]; ok {
 		switch v := rawPriority.(type) {

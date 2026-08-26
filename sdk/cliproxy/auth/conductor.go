@@ -115,6 +115,7 @@ type Manager struct {
 	pendingCooldownStateStore CooldownStateStore
 	executors                 map[string]ProviderExecutor
 	selector                  Selector
+	fillFirst                 *fillFirstPool
 	hook                      Hook
 	mu                        sync.RWMutex
 	selectorMu                sync.Mutex
@@ -179,6 +180,7 @@ func NewManager(store Store, selector Selector, hook Hook) *Manager {
 		store:                 store,
 		executors:             make(map[string]ProviderExecutor),
 		selector:              selector,
+		fillFirst:             newFillFirstPool(),
 		hook:                  hook,
 		auths:                 make(map[string]*Auth),
 		homeRuntimeAuths:      make(map[string]map[string]*Auth),

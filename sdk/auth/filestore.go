@@ -113,6 +113,7 @@ func (s *FileTokenStore) Save(ctx context.Context, auth *cliproxyauth.Auth) (str
 		if auth.Metadata == nil {
 			auth.Metadata = make(map[string]any)
 		}
+		cliproxyauth.SyncXAIAutoDisableMetadataForPersist(auth)
 		auth.Metadata["disabled"] = auth.Disabled
 		if setter, ok := auth.Storage.(metadataSetter); ok {
 			setter.SetMetadata(auth.Metadata)
@@ -121,6 +122,7 @@ func (s *FileTokenStore) Save(ctx context.Context, auth *cliproxyauth.Auth) (str
 			return "", err
 		}
 	case auth.Metadata != nil:
+		cliproxyauth.SyncXAIAutoDisableMetadataForPersist(auth)
 		auth.Metadata["disabled"] = auth.Disabled
 		raw, errMarshal := json.Marshal(auth.Metadata)
 		if errMarshal != nil {
@@ -351,6 +353,7 @@ func (s *FileTokenStore) readAuthFiles(path, baseDir string) ([]*cliproxyauth.Au
 		auth.Attributes["email"] = email
 	}
 	cliproxyauth.ApplyCustomHeadersFromMetadata(auth)
+	cliproxyauth.RestoreXAIAutoDisableStateFromMetadata(auth)
 	return []*cliproxyauth.Auth{auth}, nil
 }
 

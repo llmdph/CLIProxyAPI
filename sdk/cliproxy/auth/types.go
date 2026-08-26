@@ -98,6 +98,10 @@ type Auth struct {
 
 	recentRequests recentRequestRing `json:"-"`
 	indexAssigned  bool              `json:"-"`
+	// mapsMu guards Attributes/Metadata/ModelStates map iteration and replacement.
+	// A single *Auth can be observed by List/Clone while another path still mutates
+	// those maps; Go maps are not safe for concurrent read/write.
+	mapsMu sync.RWMutex `json:"-"`
 }
 
 const (
@@ -284,26 +288,36 @@ func (a *Auth) Clone() *Auth {
 	if a == nil {
 		return nil
 	}
+	a.mapsMu.RLock()
 	copyAuth := *a
 	copyAuth.Quota = a.Quota.Clone()
+	// Fresh mutex for the clone; never share lock state across auth snapshots.
+	copyAuth.mapsMu = sync.RWMutex{}
 	if len(a.Attributes) > 0 {
 		copyAuth.Attributes = make(map[string]string, len(a.Attributes))
 		for key, value := range a.Attributes {
 			copyAuth.Attributes[key] = value
 		}
+	} else {
+		copyAuth.Attributes = nil
 	}
 	if len(a.Metadata) > 0 {
 		copyAuth.Metadata = make(map[string]any, len(a.Metadata))
 		for key, value := range a.Metadata {
 			copyAuth.Metadata[key] = value
 		}
+	} else {
+		copyAuth.Metadata = nil
 	}
 	if len(a.ModelStates) > 0 {
 		copyAuth.ModelStates = make(map[string]*ModelState, len(a.ModelStates))
 		for key, state := range a.ModelStates {
 			copyAuth.ModelStates[key] = state.Clone()
 		}
+	} else {
+		copyAuth.ModelStates = nil
 	}
+	a.mapsMu.RUnlock()
 	copyAuth.Runtime = a.Runtime
 	return &copyAuth
 }
