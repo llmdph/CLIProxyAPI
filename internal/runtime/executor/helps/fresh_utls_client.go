@@ -76,6 +76,9 @@ func (t *freshUtlsRoundTripper) RoundTrip(req *http.Request) (*http.Response, er
 	if err != nil {
 		return nil, err
 	}
+	if req != nil {
+		recordWarpDial(req.Context(), conn)
+	}
 
 	tlsConn := tls.UClient(conn, &tls.Config{ServerName: hostname}, pickChromeHelloID())
 	if err = tlsConn.Handshake(); err != nil {

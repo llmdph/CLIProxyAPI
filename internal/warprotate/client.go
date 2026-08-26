@@ -107,8 +107,8 @@ func restartAsync(baseURL, instance, server string) {
 
 // SetHTTPClientForTest overrides the short HTTP client (tests only).
 // Quarantine asks the rotate agent to drain and restart the Warp node that
-// served a degraded/no-think request. Drain happens immediately so new
-// connections skip that backend; restart is queued if another rotate is busy.
+// served this request. `ip` is the HAProxy client address (containerIP:port)
+// captured from the SOCKS connection, not a guessed hottest backend.
 func Quarantine(ctx context.Context, baseURL, ip, reason string) {
 	baseURL = strings.TrimRight(strings.TrimSpace(baseURL), "/")
 	if baseURL == "" {
@@ -120,7 +120,7 @@ func Quarantine(ctx context.Context, baseURL, ip, reason string) {
 	reqCtx, cancel := context.WithTimeout(ctx, 8*time.Second)
 	defer cancel()
 	payload, _ := json.Marshal(map[string]string{
-		"ip":     strings.TrimSpace(ip),
+		"client": strings.TrimSpace(ip),
 		"reason": strings.TrimSpace(reason),
 	})
 	req, err := http.NewRequestWithContext(reqCtx, http.MethodPost, baseURL+"/v1/quarantine", bytes.NewReader(payload))

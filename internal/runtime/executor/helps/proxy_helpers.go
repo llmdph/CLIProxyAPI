@@ -279,7 +279,14 @@ func QuarantineWarpAfterNoThink(ctx context.Context, cfg *config.Config, auth *c
 	if ctx == nil {
 		ctx = context.Background()
 	}
-	warprotate.Quarantine(ctx, base, "", "http200_completed_no_think")
+	client := WarpDialClientAddr(ctx)
+	if client == "" {
+		log.Warnf("warprotate: skip quarantine, missing SOCKS client addr for this request")
+		CloseIdleProxyConnections(cfg, auth)
+		return
+	}
+	log.Warnf("warprotate: quarantine warp for no-think client=%s", client)
+	warprotate.Quarantine(ctx, base, client, "http200_completed_no_think")
 	CloseIdleProxyConnections(cfg, auth)
 }
 
