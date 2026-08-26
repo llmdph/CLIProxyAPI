@@ -41,7 +41,7 @@ func (e *XAIExecutor) ExecuteStream(ctx context.Context, auth *cliproxyauth.Auth
 	if err != nil {
 		return nil, err
 	}
-	applyXAIChatHeaders(httpReq, auth, token, true, prepared.sessionID)
+	applyXAIChatHeaders(httpReq, auth, token, true, prepared.sessionID, opts.Headers)
 	e.recordXAIRequest(ctx, auth, url, httpReq.Header.Clone(), prepared.body)
 
 	helps.PrepareUpstreamForProxy(ctx, e.cfg, auth)
@@ -126,14 +126,16 @@ func (e *XAIExecutor) ExecuteStream(ctx context.Context, auth *cliproxyauth.Auth
 				switch normalizedEventName {
 				case "response.output_item.done":
 					xaiCollectOutputItemDone(eventData, outputItemsByIndex, &outputItemsFallback)
-				case "response.completed":
+				case "response.completed", "response.incomplete":
 					if detail, ok := helps.ParseCodexUsage(eventData); ok {
 						reporter.Publish(ctx, detail)
 					}
 					eventData = xaiPatchCompletedOutput(eventData, outputItemsByIndex, outputItemsFallback)
 					eventData = xaiNormalizeReasoningSummaryData(eventData)
-					cacheXAIReasoningReplayFromCompleted(ctx, prepared.replayScope, eventData)
-					completedData = bytes.Clone(eventData)
+					if normalizedEventName == "response.completed" {
+						cacheXAIReasoningReplayFromCompleted(ctx, prepared.replayScope, eventData)
+						completedData = bytes.Clone(eventData)
+					}
 					normalizedEventName = gjson.GetBytes(eventData, "type").String()
 				}
 

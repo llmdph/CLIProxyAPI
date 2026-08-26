@@ -60,7 +60,7 @@ func (m *Manager) recordXAIAwareExecutionResult(ctx context.Context, result Resu
 	if m == nil {
 		return
 	}
-	if isXAIProvider(provider) && err != nil && !shouldRotateXAICredential(err) {
+	if isXAIProvider(provider) && err != nil && !shouldRotateXAICredential(err) && !isRequestInvalidError(err) {
 		return
 	}
 	m.recordExecutionResult(ctx, result, auth, ephemeral)
@@ -101,6 +101,31 @@ func (m *Manager) disableAuthForQuotaExhausted(ctx context.Context, auth *Auth, 
 	log.Warnf("xai: disabled auth %s after %s", auth.ID, detail)
 }
 
+func (m *Manager) disableAuthForNoThink(ctx context.Context, auth *Auth, noThink *cliproxyexecutor.NoThinkStreamError) {
+	if m == nil || auth == nil {
+		return
+	}
+	clone := auth.Clone()
+	if clone == nil {
+		return
+	}
+	now := time.Now()
+	clone.Disabled = true
+	clone.Status = StatusDisabled
+	clone.UpdatedAt = now
+	clone.NextRetryAfter = now.Add(xaiDisabledAutoReenableAfter)
+	detail := "no_think_stream"
+	if noThink != nil && strings.TrimSpace(noThink.Detail) != "" {
+		detail = "no_think_stream: " + strings.TrimSpace(noThink.Detail)
+	}
+	clone.StatusMessage = detail
+	if _, errUpdate := m.Update(ctx, clone); errUpdate != nil {
+		log.WithError(errUpdate).Warnf("xai: failed to disable auth %s after %s", auth.ID, detail)
+		return
+	}
+	log.Warnf("xai: disabled auth %s after %s", auth.ID, detail)
+}
+
 func isXAIAutoDisabledStatusMessage(message string) bool {
 	lower := strings.ToLower(strings.TrimSpace(message))
 	if lower == "" {
@@ -111,6 +136,11 @@ func isXAIAutoDisabledStatusMessage(message string) bool {
 		strings.Contains(lower, "free-usage-exhausted") ||
 		strings.Contains(lower, "included free usage") ||
 		strings.Contains(lower, "personal-team-blocked:spending-limit")
+}
+
+func shouldPreserveXAIAutoDisableSchedule(auth *Auth) bool {
+	_, ok := xaiDisabledReenableAt(auth)
+	return ok
 }
 
 func xaiDisabledReenableAt(auth *Auth) (time.Time, bool) {

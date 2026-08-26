@@ -32,6 +32,7 @@ const (
 	// emits SSE when that schema is present, so Desktop hangs on "thinking".
 	xaiCodexAppNamespaceName    = "codex_app"
 	xaiAutomationUpdateToolName = "automation_update"
+	xaiMCPCodexAutomationName  = "mcp__codex_app_automation_update"
 	// Permissive placeholder schema: keeps the tool callable without the hang.
 	xaiSafeFunctionParameters   = `{"type":"object","properties":{},"additionalProperties":true}`
 	xaiImagesGenerationsPath    = "/images/generations"
@@ -83,6 +84,8 @@ func (e *XAIExecutor) PrepareRequest(req *http.Request, auth *cliproxyauth.Auth)
 	token, _ := xaiCreds(auth)
 	if strings.TrimSpace(token) != "" {
 		req.Header.Set("Authorization", "Bearer "+token)
+	} else {
+		req.Header.Del("Authorization")
 	}
 	var attrs map[string]string
 	if auth != nil {

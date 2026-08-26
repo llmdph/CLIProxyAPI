@@ -10,6 +10,7 @@ import (
 	"time"
 
 	"github.com/router-for-me/CLIProxyAPI/v7/internal/registry"
+	"github.com/router-for-me/CLIProxyAPI/v7/internal/runtime/executor/helps"
 	"github.com/router-for-me/CLIProxyAPI/v7/internal/signature"
 	"github.com/router-for-me/CLIProxyAPI/v7/internal/thinking"
 	log "github.com/sirupsen/logrus"
@@ -408,16 +409,33 @@ func xaiFunctionParametersNeedSimplification(tool gjson.Result, namespaceName st
 	}
 
 	toolName := strings.TrimSpace(tool.Get("name").String())
-	qualifiedAutomationName := xaiCodexAppNamespaceName + "__" + xaiAutomationUpdateToolName
-	if isFunction && (strings.EqualFold(toolName, qualifiedAutomationName) ||
-		(strings.EqualFold(strings.TrimSpace(namespaceName), xaiCodexAppNamespaceName) &&
-			strings.EqualFold(toolName, xaiAutomationUpdateToolName))) {
+	if isFunction && isXAICodexAutomationUpdateTool(toolName, namespaceName) {
 		return true
 	}
 
 	parameters := tool.Get("parameters")
+	return xaiSchemaHasNonObjectUnion(parameters)
+}
+
+func isXAICodexAutomationUpdateTool(toolName, namespaceName string) bool {
+	toolName = strings.ToLower(strings.TrimSpace(toolName))
+	namespaceName = strings.ToLower(strings.TrimSpace(namespaceName))
+	if toolName == "" {
+		return false
+	}
+	if strings.EqualFold(toolName, xaiMCPCodexAutomationName) ||
+		strings.EqualFold(toolName, xaiCodexAppNamespaceName+"__"+xaiAutomationUpdateToolName) {
+		return true
+	}
+	if strings.Contains(toolName, "codex_app") && strings.Contains(toolName, "automation_update") {
+		return true
+	}
+	return strings.Contains(namespaceName, "codex_app") && strings.EqualFold(toolName, xaiAutomationUpdateToolName)
+}
+
+func xaiSchemaHasNonObjectUnion(schema gjson.Result) bool {
 	for _, unionName := range []string{"anyOf", "oneOf"} {
-		union := parameters.Get(unionName)
+		union := schema.Get(unionName)
 		if !union.IsArray() {
 			continue
 		}
@@ -812,6 +830,7 @@ func xaiCollectOutputItemDone(eventData []byte, outputItemsByIndex map[int64][]b
 }
 
 func xaiPatchCompletedOutput(eventData []byte, outputItemsByIndex map[int64][]byte, outputItemsFallback [][]byte) []byte {
+	eventData = helps.EnsureResponsesUsageDetails(eventData)
 	outputResult := gjson.GetBytes(eventData, "response.output")
 	shouldPatchOutput := (!outputResult.Exists() || !outputResult.IsArray() || len(outputResult.Array()) == 0) && (len(outputItemsByIndex) > 0 || len(outputItemsFallback) > 0)
 	if !shouldPatchOutput {
