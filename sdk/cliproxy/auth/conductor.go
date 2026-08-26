@@ -116,6 +116,7 @@ type Manager struct {
 	executors                 map[string]ProviderExecutor
 	selector                  Selector
 	fillFirst                 *fillFirstPool
+	grokSessionNoThink        *grokSessionNoThinkTracker
 	hook                      Hook
 	mu                        sync.RWMutex
 	selectorMu                sync.Mutex
@@ -181,6 +182,7 @@ func NewManager(store Store, selector Selector, hook Hook) *Manager {
 		executors:             make(map[string]ProviderExecutor),
 		selector:              selector,
 		fillFirst:             newFillFirstPool(),
+		grokSessionNoThink:    newGrokSessionNoThinkTracker(),
 		hook:                  hook,
 		auths:                 make(map[string]*Auth),
 		homeRuntimeAuths:      make(map[string]map[string]*Auth),

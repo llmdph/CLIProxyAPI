@@ -117,14 +117,18 @@ func (e *XAIExecutor) Execute(ctx context.Context, auth *cliproxyauth.Auth, req 
 				out = helps.EnsureResponsesUsageDetails(out)
 			}
 			respOut := cliproxyexecutor.Response{Payload: out, Headers: httpResp.Header.Clone()}
-			if errThink := xaiGateThinkStream(auth, prepared.body, data, completedData, respOut, nil, nil); errThink != nil {
-				authID := ""
-				if auth != nil {
-					authID = strings.TrimSpace(auth.ID)
+			// Only HTTP 200 + response.completed missing Think is no_think_stream.
+			// incomplete / truncated / other errors must not disable accounts or mark sessions.
+			if eventType == "response.completed" {
+				if errThink := xaiGateThinkStream(auth, prepared.body, data, completedData, respOut, nil, nil); errThink != nil {
+					authID := ""
+					if auth != nil {
+						authID = strings.TrimSpace(auth.ID)
+					}
+					log.Warnf("xai: HTTP 200 completed without Think, quarantining warp auth=%s err=%v", authID, errThink)
+					helps.QuarantineWarpAfterNoThink(ctx, e.cfg, auth)
+					return respOut, errThink
 				}
-				log.Warnf("xai: HTTP 200 completed without Think, quarantining warp auth=%s err=%v", authID, errThink)
-				helps.QuarantineWarpAfterNoThink(ctx, e.cfg, auth)
-				return respOut, errThink
 			}
 			return respOut, nil
 		}

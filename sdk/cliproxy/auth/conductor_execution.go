@@ -44,6 +44,9 @@ func claudeOAuthRequestCancellation(ctx context.Context, auth *Auth, err error) 
 // It supports multiple providers for the same model and round-robins the starting provider per model.
 func (m *Manager) Execute(ctx context.Context, providers []string, req cliproxyexecutor.Request, opts cliproxyexecutor.Options) (cliproxyexecutor.Response, error) {
 	req, opts = cliproxysession.Enrich(req, opts)
+	if errMarked := m.errIfGrokSessionMarked(req, opts); errMarked != nil {
+		return cliproxyexecutor.Response{}, errMarked
+	}
 	ctx, finish := m.beginFillFirstHold(ctx)
 	defer finish()
 	normalized := m.normalizeProviders(providers)
@@ -52,6 +55,9 @@ func (m *Manager) Execute(ctx context.Context, providers []string, req cliproxye
 	}
 	if m.HomeEnabled() {
 		resp, errHome := m.executeHome(ctx, normalized, req, opts, false)
+		if errHome == nil {
+			m.clearGrokSessionNoThink(req, opts)
+		}
 		return resp, unwrapRequestStopError(errHome)
 	}
 
@@ -62,6 +68,7 @@ func (m *Manager) Execute(ctx context.Context, providers []string, req cliproxye
 	for attempt := 0; ; attempt++ {
 		resp, errExec := m.executeMixedOnce(ctx, normalized, req, opts, maxRetryCredentials, attempt, defaultRequestRetry)
 		if errExec == nil {
+			m.clearGrokSessionNoThink(req, opts)
 			return resp, nil
 		}
 		if isRequestTerminatedError(errExec) || isRequestStopError(errExec) {
@@ -135,6 +142,9 @@ func (m *Manager) ExecuteCount(ctx context.Context, providers []string, req clip
 // It supports multiple providers for the same model and round-robins the starting provider per model.
 func (m *Manager) ExecuteStream(ctx context.Context, providers []string, req cliproxyexecutor.Request, opts cliproxyexecutor.Options) (*cliproxyexecutor.StreamResult, error) {
 	req, opts = cliproxysession.Enrich(req, opts)
+	if errMarked := m.errIfGrokSessionMarked(req, opts); errMarked != nil {
+		return nil, errMarked
+	}
 	ctx, finish := m.beginFillFirstHold(ctx)
 	if m.HomeEnabled() {
 		if unlockSession := m.lockHomeWebsocketSession(ctx, opts); unlockSession != nil {
@@ -158,6 +168,7 @@ func (m *Manager) ExecuteStream(ctx context.Context, providers []string, req cli
 	for {
 		result, errStream := m.executeStreamMixedOnce(ctx, normalized, req, opts, maxRetryCredentials, &homeRetryLimit, attempt, defaultRequestRetry)
 		if errStream == nil {
+			m.clearGrokSessionNoThink(req, opts)
 			return attachFillFirstStreamHold(result, finish), nil
 		}
 		if m.HomeEnabled() && retryRoundPending {
@@ -334,6 +345,7 @@ func (m *Manager) executeMixedOnce(ctx context.Context, providers []string, req 
 	}
 	attempted := make(map[string]struct{})
 	var lastErr error
+	noThinkConsecutive := 0
 	for {
 		if maxRetryCredentials > 0 && len(attempted) >= maxRetryCredentials {
 			if lastErr != nil {
@@ -447,6 +459,9 @@ func (m *Manager) executeMixedOnce(ctx context.Context, providers []string, req 
 					m.disableAuthForNoThink(execCtx, auth, noThink)
 					result := Result{AuthID: auth.ID, Provider: provider, Model: resultModel, Success: false, Error: &Error{Code: "no_think_stream", Message: noThink.Error(), Retryable: true}, Options: execOpts}
 					m.MarkResult(execCtx, result)
+					if errMarked := m.handleGrokSessionNoThink(req, opts, &noThinkConsecutive, errExec); errMarked != nil {
+						return cliproxyexecutor.Response{}, errMarked
+					}
 					authErr = errExec
 					continue
 				}
@@ -738,6 +753,7 @@ func (m *Manager) executeStreamMixedOnce(ctx context.Context, providers []string
 	attempted := make(map[string]struct{})
 	unauthorizedRefreshTried := make(map[string]struct{})
 	var lastErr error
+	noThinkConsecutive := 0
 	var roundTiming homeRetryRoundTiming
 	for {
 		allowSameAuthRetry := homeMode && homeSameAuthRetryPending && lastHomeAuthID != "" && homeSameAuthRetries[lastHomeAuthID] == 0
@@ -971,6 +987,9 @@ func (m *Manager) executeStreamMixedOnce(ctx context.Context, providers []string
 					m.disableAuthForNoThink(execCtx, auth, noThink)
 					result := Result{AuthID: auth.ID, Provider: provider, Model: routeModel, Success: false, Error: &Error{Code: "no_think_stream", Message: noThink.Error(), Retryable: true}, Options: execOpts}
 					m.MarkResult(execCtx, result)
+					if errMarked := m.handleGrokSessionNoThink(req, opts, &noThinkConsecutive, errStream); errMarked != nil {
+						return nil, errMarked
+					}
 					lastErr = errStream
 					if homeMode {
 						homeAuthCount++
