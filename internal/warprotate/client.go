@@ -116,11 +116,17 @@ func Quarantine(ctx context.Context, baseURL, ip, reason string) {
 	}
 	if ctx == nil {
 		ctx = context.Background()
+	} else {
+		ctx = context.WithoutCancel(ctx)
 	}
 	reqCtx, cancel := context.WithTimeout(ctx, 8*time.Second)
 	defer cancel()
+	client := strings.TrimSpace(ip)
+	if client == "" {
+		log.Warnf("warprotate: quarantine POST without client addr reason=%s", strings.TrimSpace(reason))
+	}
 	payload, _ := json.Marshal(map[string]string{
-		"client": strings.TrimSpace(ip),
+		"client": client,
 		"reason": strings.TrimSpace(reason),
 	})
 	req, err := http.NewRequestWithContext(reqCtx, http.MethodPost, baseURL+"/v1/quarantine", bytes.NewReader(payload))
