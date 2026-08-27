@@ -488,3 +488,32 @@ func (m *Manager) executeStreamWithModelPool(ctx context.Context, executor Provi
 	}
 	return nil, lastErr
 }
+
+func responseFromNoThink(err error) (cliproxyexecutor.Response, bool) {
+	noThink, ok := cliproxyexecutor.AsNoThinkStream(err)
+	if !ok || noThink == nil {
+		return cliproxyexecutor.Response{}, false
+	}
+	if len(noThink.Fallback.Payload) > 0 || noThink.Fallback.Headers != nil {
+		return noThink.Fallback, true
+	}
+	return cliproxyexecutor.Response{}, false
+}
+
+func streamFromNoThink(err error) (*cliproxyexecutor.StreamResult, bool) {
+	noThink, ok := cliproxyexecutor.AsNoThinkStream(err)
+	if !ok || noThink == nil {
+		return nil, false
+	}
+	if len(noThink.StreamChunks) == 0 && noThink.StreamHeader == nil {
+		return nil, false
+	}
+	ch := make(chan cliproxyexecutor.StreamChunk, len(noThink.StreamChunks))
+	go func() {
+		defer close(ch)
+		for _, payload := range noThink.StreamChunks {
+			ch <- cliproxyexecutor.StreamChunk{Payload: payload}
+		}
+	}()
+	return &cliproxyexecutor.StreamResult{Headers: cloneHTTPHeader(noThink.StreamHeader), Chunks: ch}, true
+}

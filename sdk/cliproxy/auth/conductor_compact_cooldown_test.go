@@ -98,8 +98,8 @@ func TestManager_ResponsesCompact_TransientFailure_AvailabilityNeutral(t *testin
 	if elapsed > 2*time.Second {
 		t.Fatalf("Execute took %v, should not pause for cooldown wait", elapsed)
 	}
-	if executor.calls != 2 {
-		t.Fatalf("executor.calls = %d, want 2 (fallback across candidate auths)", executor.calls)
+	if executor.calls != 1 {
+		t.Fatalf("executor.calls = %d, want 1 (compaction does not rotate credentials)", executor.calls)
 	}
 
 	// Verify model states are not unavailable

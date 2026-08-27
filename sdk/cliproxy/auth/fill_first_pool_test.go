@@ -102,3 +102,51 @@ func TestFillFirstPoolDropRemovesMember(t *testing.T) {
 		t.Fatal("re-add after drop")
 	}
 }
+
+func TestFillFirstPoolAddIdle(t *testing.T) {
+	t.Parallel()
+	p := newFillFirstPool()
+	if !p.addIdle("a") {
+		t.Fatal("add idle a")
+	}
+	if !p.addIdle("a") {
+		t.Fatal("add idle a again")
+	}
+	if got := p.occupyIdle([]string{"a"}, nil); got != "a" {
+		t.Fatalf("occupy idle after addIdle = %q", got)
+	}
+	if p.addAndOccupy("a") {
+		t.Fatal("occupy busy a")
+	}
+}
+
+func TestFillFirstPoolDropIfIdle(t *testing.T) {
+	t.Parallel()
+	p := newFillFirstPool()
+	if !p.addIdle("a") {
+		t.Fatal("add idle a")
+	}
+	if !p.dropIfIdle("a") {
+		t.Fatal("drop idle a")
+	}
+	if p.hasMember("a") {
+		t.Fatal("idle member still present")
+	}
+	if !p.addAndOccupy("b") {
+		t.Fatal("occupy b")
+	}
+	if p.dropIfIdle("b") {
+		t.Fatal("dropIfIdle should refuse in-flight member")
+	}
+	if !p.hasMember("b") || !p.inFlightHas("b") {
+		t.Fatal("in-flight member was dropped")
+	}
+	p.release("b")
+	if !p.dropIfIdle("b") {
+		t.Fatal("drop after release")
+	}
+	if p.hasMember("b") {
+		t.Fatal("released member still present")
+	}
+}
+

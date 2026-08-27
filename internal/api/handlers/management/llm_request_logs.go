@@ -3,6 +3,7 @@ package management
 import (
 	"net/http"
 	"strconv"
+	"strings"
 
 	"github.com/gin-gonic/gin"
 	"github.com/router-for-me/CLIProxyAPI/v7/internal/llmreqlog"
@@ -12,7 +13,12 @@ import (
 func (h *Handler) GetLLMRequestLogs(c *gin.Context) {
 	limit, _ := strconv.Atoi(c.DefaultQuery("limit", "50"))
 	offset, _ := strconv.Atoi(c.DefaultQuery("offset", "0"))
-	items, total := llmreqlog.List(limit, offset)
+	class := c.Query("class")
+	account := strings.TrimSpace(c.Query("account"))
+	if account == "" {
+		account = strings.TrimSpace(c.Query("email"))
+	}
+	items, total := llmreqlog.List(limit, offset, class, account)
 	c.JSON(http.StatusOK, gin.H{
 		"items":  items,
 		"total":  total,

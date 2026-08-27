@@ -7,6 +7,7 @@ import (
 	"strings"
 	"sync/atomic"
 	"testing"
+	"time"
 
 	"github.com/router-for-me/CLIProxyAPI/v7/internal/registry"
 	cliproxyexecutor "github.com/router-for-me/CLIProxyAPI/v7/sdk/cliproxy/executor"
@@ -31,21 +32,21 @@ func TestGrokConversationSessionIDPrefersConvHeader(t *testing.T) {
 	}
 }
 
-func TestGrokSessionNoThinkTrackerMarksOnSecondHit(t *testing.T) {
+func TestGrokSessionNoThinkTrackerDoesNotMark(t *testing.T) {
 	t.Parallel()
 	tr := newGrokSessionNoThinkTracker()
+	tr.sessions["conv-old"] = grokSessionNoThinkEntry{marked: true, expiresAt: time.Now().Add(time.Hour)}
+	if n := tr.clearAll(); n != 1 {
+		t.Fatalf("clearAll = %d, want 1", n)
+	}
 	if tr.note("conv-1") {
-		t.Fatal("first no-think should not mark")
+		t.Fatal("session tracker must not mark conversations")
 	}
-	if !tr.note("conv-1") {
-		t.Fatal("second consecutive no-think should mark")
+	if tr.note("conv-1") || tr.note("conv-1") {
+		t.Fatal("repeated no-think must not mark the session")
 	}
-	if !tr.marked("conv-1") {
-		t.Fatal("session should stay marked")
-	}
-	tr.clear("conv-1")
 	if tr.marked("conv-1") {
-		t.Fatal("cleared session should not stay marked")
+		t.Fatal("session should not be marked")
 	}
 }
 
@@ -58,18 +59,44 @@ func TestHandleGrokSessionNoThinkIgnoresNonNoThinkErrors(t *testing.T) {
 	}
 	consecutive := 0
 	quotaErr := errors.New(`{"code":"subscription:free-usage-exhausted"}`)
-	if err := m.handleGrokSessionNoThink(req, opts, &consecutive, quotaErr); err != nil {
-		t.Fatalf("quota error must not mark session: %v", err)
+	if m.handleGrokSessionNoThink(context.Background(), req, opts, &consecutive, quotaErr) {
+		t.Fatal("quota error must not accept no-think fallback")
 	}
 	if consecutive != 0 {
 		t.Fatalf("consecutive = %d, want 0", consecutive)
 	}
 	disconnect := errors.New("xai stream error: stream disconnected before response.completed")
-	if err := m.handleGrokSessionNoThink(req, opts, &consecutive, disconnect); err != nil {
-		t.Fatalf("disconnect must not mark session: %v", err)
+	if m.handleGrokSessionNoThink(context.Background(), req, opts, &consecutive, disconnect) {
+		t.Fatal("disconnect must not accept no-think fallback")
 	}
 	if m.grokSessionNoThink.marked("conv-ignore") {
 		t.Fatal("non no-think errors marked the session")
+	}
+}
+
+func TestHandleGrokSessionNoThinkAcceptsOnThird(t *testing.T) {
+	t.Parallel()
+	m := NewManager(nil, nil, nil)
+	req := cliproxyexecutor.Request{Model: "grok-4.6"}
+	opts := cliproxyexecutor.Options{
+		Metadata: map[string]any{cliproxyexecutor.ExecutionSessionMetadataKey: "conv-third"},
+	}
+	consecutive := 0
+	noThink := &cliproxyexecutor.NoThinkStreamError{Detail: "无Think流"}
+	if m.handleGrokSessionNoThink(context.Background(), req, opts, &consecutive, noThink) {
+		t.Fatal("first no-think should keep rotating")
+	}
+	if m.handleGrokSessionNoThink(context.Background(), req, opts, &consecutive, noThink) {
+		t.Fatal("second no-think should keep rotating")
+	}
+	if !m.handleGrokSessionNoThink(context.Background(), req, opts, &consecutive, noThink) {
+		t.Fatal("third no-think should return content")
+	}
+	if consecutive != 3 {
+		t.Fatalf("consecutive = %d, want 3", consecutive)
+	}
+	if m.grokSessionNoThink.marked("conv-third") {
+		t.Fatal("third no-think must not mark the session")
 	}
 }
 
@@ -81,11 +108,28 @@ type noThinkCountingExecutor struct {
 func (e *noThinkCountingExecutor) Identifier() string { return "xai" }
 func (e *noThinkCountingExecutor) Execute(context.Context, *Auth, cliproxyexecutor.Request, cliproxyexecutor.Options) (cliproxyexecutor.Response, error) {
 	e.calls.Add(1)
-	return cliproxyexecutor.Response{}, e.err
+	noThink, _ := cliproxyexecutor.AsNoThinkStream(e.err)
+	if noThink == nil {
+		return cliproxyexecutor.Response{}, e.err
+	}
+	cloned := *noThink
+	if len(cloned.Fallback.Payload) == 0 {
+		cloned.Fallback = cliproxyexecutor.Response{Payload: []byte(`{"id":"no-think-fallback"}`)}
+	}
+	return cliproxyexecutor.Response{}, &cloned
 }
 func (e *noThinkCountingExecutor) ExecuteStream(context.Context, *Auth, cliproxyexecutor.Request, cliproxyexecutor.Options) (*cliproxyexecutor.StreamResult, error) {
 	e.calls.Add(1)
-	return nil, e.err
+	noThink, _ := cliproxyexecutor.AsNoThinkStream(e.err)
+	if noThink == nil {
+		return nil, e.err
+	}
+	cloned := *noThink
+	if len(cloned.StreamChunks) == 0 {
+		cloned.StreamChunks = [][]byte{[]byte(`data: {"id":"no-think-fallback"}`)}
+		cloned.StreamHeader = http.Header{"Content-Type": []string{"text/event-stream"}}
+	}
+	return nil, &cloned
 }
 func (e *noThinkCountingExecutor) Refresh(_ context.Context, auth *Auth) (*Auth, error) {
 	return auth, nil
@@ -114,7 +158,7 @@ func registerXAITestAuths(t *testing.T, m *Manager, model string, ids ...string)
 	})
 }
 
-func TestExecuteStreamMarksSessionAfterTwoHTTP200NoThinks(t *testing.T) {
+func TestExecuteStreamReturnsThirdNoThinkContent(t *testing.T) {
 	m := NewManager(nil, nil, nil)
 	m.SetRetryConfig(0, 0, 0)
 	exec := &noThinkCountingExecutor{err: &cliproxyexecutor.NoThinkStreamError{Detail: "无Think流"}}
@@ -126,37 +170,40 @@ func TestExecuteStreamMarksSessionAfterTwoHTTP200NoThinks(t *testing.T) {
 		Stream:   true,
 		Metadata: map[string]any{cliproxyexecutor.ExecutionSessionMetadataKey: "conv-marked"},
 	}
-	_, err := m.ExecuteStream(context.Background(), []string{"xai"}, cliproxyexecutor.Request{Model: model}, opts)
-	if err == nil {
-		t.Fatal("expected session marked error")
+	result, err := m.ExecuteStream(context.Background(), []string{"xai"}, cliproxyexecutor.Request{Model: model}, opts)
+	if err != nil {
+		t.Fatalf("third no-think should return content, err=%v", err)
 	}
-	if !strings.Contains(err.Error(), grokSessionMarkedMessage) {
-		t.Fatalf("error = %v, want %q", err, grokSessionMarkedMessage)
+	if result == nil {
+		t.Fatal("missing fallback stream")
 	}
-	if got := exec.calls.Load(); got != 2 {
-		t.Fatalf("calls = %d, want 2 HTTP 200 no-think attempts", got)
+	if got := exec.calls.Load(); got != 3 {
+		t.Fatalf("calls = %d, want 3 HTTP 200 no-think attempts", got)
 	}
-	disabled := 0
+	downranked := 0
 	for _, id := range []string{"xai-a@outlook.com", "xai-b@outlook.com", "xai-c@outlook.com"} {
 		auth, ok := m.GetByID(id)
 		if !ok || auth == nil {
 			t.Fatalf("missing auth %s", id)
 		}
 		if auth.Disabled {
-			disabled++
+			t.Fatalf("no-think should move %s to secondary pool, not disable it", id)
+		}
+		if isXAIDownrankAuth(auth) {
+			downranked++
 		}
 	}
-	if disabled != 2 {
-		t.Fatalf("disabled auths = %d, want 2 so the unused account is spared", disabled)
+	if downranked != 3 {
+		t.Fatalf("downrank auths = %d, want 3", downranked)
+	}
+	if m.grokSessionNoThink.marked("conv-marked") {
+		t.Fatal("session must not be marked")
 	}
 
 	exec.calls.Store(0)
 	_, err = m.ExecuteStream(context.Background(), []string{"xai"}, cliproxyexecutor.Request{Model: model}, opts)
-	if err == nil || !strings.Contains(err.Error(), grokSessionMarkedMessage) {
-		t.Fatalf("marked session should be rejected immediately, err=%v", err)
-	}
-	if got := exec.calls.Load(); got != 0 {
-		t.Fatalf("marked session still executed %d times", got)
+	if err != nil && strings.Contains(err.Error(), grokSessionMarkedMessage) {
+		t.Fatalf("must not reject the session: %v", err)
 	}
 }
 
@@ -186,3 +233,68 @@ func TestExecuteStreamQuotaErrorsDoNotMarkSession(t *testing.T) {
 		t.Fatal("quota errors must not mark the grok session")
 	}
 }
+
+func TestHandleGrokSessionNoThinkSkipsAuxPool(t *testing.T) {
+	t.Parallel()
+	m := NewManager(nil, nil, nil)
+	req := cliproxyexecutor.Request{Model: "grok-4.6"}
+	opts := cliproxyexecutor.Options{
+		Metadata: map[string]any{
+			cliproxyexecutor.ExecutionSessionMetadataKey: "conv-aux",
+			cliproxyexecutor.RequestClassMetadataKey:     cliproxyexecutor.RequestClassCompaction,
+		},
+	}
+	consecutive := 0
+	noThink := &cliproxyexecutor.NoThinkStreamError{Detail: "无Think流"}
+	ctx := cliproxyexecutor.WithRequestClass(context.Background(), cliproxyexecutor.RequestClassCompaction)
+	if m.handleGrokSessionNoThink(ctx, req, opts, &consecutive, noThink) {
+		t.Fatal("aux no-think must not accept main-pool fallback")
+	}
+	if m.handleGrokSessionNoThink(ctx, req, opts, &consecutive, noThink) {
+		t.Fatal("second aux no-think must not accept main-pool fallback")
+	}
+	if consecutive != 0 {
+		t.Fatalf("aux consecutive = %d, want 0", consecutive)
+	}
+	if m.grokSessionNoThink.marked("conv-aux") {
+		t.Fatal("downrank/aux pool must not mark grok sessions")
+	}
+	m.grokSessionNoThink.sessions["conv-aux"] = grokSessionNoThinkEntry{marked: true, expiresAt: time.Now().Add(time.Hour)}
+	if err := m.errIfGrokSessionMarked(ctx, req, opts); err != nil {
+		t.Fatalf("aux request rejected marked session: %v", err)
+	}
+	if m.grokSessionNoThink.marked("conv-aux") {
+		t.Fatal("leftover session marks must be cleared")
+	}
+}
+
+func TestExecuteStreamCompactionNoThinkDoesNotMarkSession(t *testing.T) {
+	m := NewManager(nil, &FillFirstSelector{}, nil)
+	m.SetRetryConfig(0, 0, 0)
+	exec := &noThinkCountingExecutor{err: &cliproxyexecutor.NoThinkStreamError{Detail: "无Think流"}}
+	m.RegisterExecutor(exec)
+	model := "grok-4.6"
+	registerXAITestAuths(t, m, model, "xai-c1@outlook.com", "xai-c2@outlook.com")
+
+	opts := cliproxyexecutor.Options{
+		Stream: true,
+		Metadata: map[string]any{
+			cliproxyexecutor.ExecutionSessionMetadataKey: "conv-compact",
+		},
+	}
+	req := cliproxyexecutor.Request{
+		Model:   model,
+		Payload: []byte(`{"input":[{"type":"compaction_trigger"}],"reasoning":{"effort":"xhigh"}}`),
+	}
+	_, err := m.ExecuteStream(context.Background(), []string{"xai"}, req, opts)
+	if err != nil && strings.Contains(err.Error(), grokSessionMarkedMessage) {
+		t.Fatalf("compaction no-think marked the session: %v", err)
+	}
+	if m.grokSessionNoThink.marked("conv-compact") {
+		t.Fatal("compaction request marked the grok session")
+	}
+	if got := exec.calls.Load(); got != 1 {
+		t.Fatalf("compaction should not rotate credentials, calls=%d want 1", got)
+	}
+}
+

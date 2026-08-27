@@ -1,6 +1,7 @@
 package executor
 
 import (
+	"context"
 	"encoding/json"
 	"fmt"
 	"net/http"
@@ -275,7 +276,36 @@ func bytesTrimSpace(b []byte) []byte {
 
 // xaiGateThinkStream returns a NoThinkStreamError when Think is required but
 // missing/zero. Prefer completed JSON evidence, then full SSE, then client payload.
+func xaiInspectThinkStream(rawSSE, completedJSON, fallbackPayload []byte) xaiThinkEvidence {
+	ev := parseXAIThinkEvidence(completedJSON)
+	if ev.bad() && len(rawSSE) > 0 {
+		evSSE := parseXAIThinkFromSSE(rawSSE)
+		if evSSE.Length > ev.Length || (!ev.HasThink && evSSE.HasThink) {
+			ev = evSSE
+		}
+	}
+	if ev.bad() && len(fallbackPayload) > 0 {
+		evClient := parseXAIThinkEvidence(fallbackPayload)
+		if evClient.Length > ev.Length || (!ev.HasThink && evClient.HasThink) {
+			ev = evClient
+		}
+	}
+	return ev
+}
+
+func xaiNotifyThinkOK(ctx context.Context, auth *cliproxyauth.Auth, ev xaiThinkEvidence) {
+	if !ev.ok() {
+		return
+	}
+	authID := ""
+	if auth != nil {
+		authID = strings.TrimSpace(auth.ID)
+	}
+	cliproxyexecutor.NotifyXAIThinkOK(ctx, authID)
+}
+
 func xaiGateThinkStream(
+	ctx context.Context,
 	auth *cliproxyauth.Auth,
 	upstreamBody []byte,
 	rawSSE []byte,
@@ -284,23 +314,15 @@ func xaiGateThinkStream(
 	streamHeader http.Header,
 	streamChunks [][]byte,
 ) error {
-	if !xaiRequestExpectsThink(upstreamBody) {
+	ev := xaiInspectThinkStream(rawSSE, completedJSON, fallback.Payload)
+	if ev.ok() {
+		xaiNotifyThinkOK(ctx, auth, ev)
 		return nil
 	}
-	ev := parseXAIThinkEvidence(completedJSON)
-	if ev.bad() && len(rawSSE) > 0 {
-		evSSE := parseXAIThinkFromSSE(rawSSE)
-		if evSSE.Length > ev.Length || (!ev.HasThink && evSSE.HasThink) {
-			ev = evSSE
-		}
+	if cliproxyexecutor.RequestClassUsesAuxPool(cliproxyexecutor.RequestClassFromContext(ctx)) {
+		return nil
 	}
-	if ev.bad() && len(fallback.Payload) > 0 {
-		evClient := parseXAIThinkEvidence(fallback.Payload)
-		if evClient.Length > ev.Length || (!ev.HasThink && evClient.HasThink) {
-			ev = evClient
-		}
-	}
-	if ev.ok() {
+	if !xaiRequestExpectsThink(upstreamBody) {
 		return nil
 	}
 	authID := ""

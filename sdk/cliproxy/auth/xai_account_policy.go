@@ -18,6 +18,7 @@ const (
 	xaiAutoDisableNextRetryAfterKey = "next_retry_after"
 	xaiAutoDisableUpdatedAtKey      = "disabled_updated_at"
 	xaiAutoDisableKindKey           = "xai_auto_disable"
+	xaiDownrankPoolKey              = "xai_downrank_pool"
 )
 
 // xaiAutoDisableKindValue marks auth files disabled by xAI quota / no-think policy.
@@ -117,6 +118,9 @@ func (m *Manager) disableXAIAuthIfQuotaExhausted(ctx context.Context, auth *Auth
 	if m == nil || auth == nil || err == nil {
 		return false
 	}
+	if cliproxyexecutor.RequestClassUsesAuxPool(cliproxyexecutor.RequestClassFromContext(ctx)) {
+		return false
+	}
 	if !isXAIProvider(provider) || !isXAIQuotaExhaustedError(err) {
 		return false
 	}
@@ -157,13 +161,15 @@ func (m *Manager) disableAuthForQuotaExhausted(ctx context.Context, auth *Auth, 
 		log.WithError(errUpdate).Warnf("xai: failed to disable auth %s after %s", auth.ID, detail)
 		return
 	}
-	if m.fillFirst != nil {
-		m.fillFirst.drop(auth.ID)
-	}
+	m.dropFillFirstMember(auth.ID)
 	log.Warnf("xai: disabled auth %s after %s", auth.ID, detail)
 }
 
 func (m *Manager) disableAuthForNoThink(ctx context.Context, auth *Auth, noThink *cliproxyexecutor.NoThinkStreamError) {
+	m.moveAuthToDownrankPool(ctx, auth, noThink)
+}
+
+func (m *Manager) moveAuthToDownrankPool(ctx context.Context, auth *Auth, noThink *cliproxyexecutor.NoThinkStreamError) {
 	if m == nil || auth == nil {
 		return
 	}
@@ -172,24 +178,221 @@ func (m *Manager) disableAuthForNoThink(ctx context.Context, auth *Auth, noThink
 		return
 	}
 	now := time.Now()
-	clone.Disabled = true
-	clone.Status = StatusDisabled
+	already := isXAIDownrankAuth(clone)
+	clone.Disabled = false
+	clone.Status = StatusActive
+	clone.StatusMessage = ""
+	clone.Unavailable = false
+	clone.NextRetryAfter = time.Time{}
+	clone.LastError = nil
 	clone.UpdatedAt = now
-	clone.NextRetryAfter = now.Add(xaiDisabledAutoReenableAfter)
-	detail := "no_think_stream"
-	if noThink != nil && strings.TrimSpace(noThink.Detail) != "" {
-		detail = "no_think_stream: " + strings.TrimSpace(noThink.Detail)
-	}
-	clone.StatusMessage = detail
+	markXAIDownrank(clone)
 	syncXAIAutoDisableMetadata(clone)
 	if _, errUpdate := m.Update(ctx, clone); errUpdate != nil {
-		log.WithError(errUpdate).Warnf("xai: failed to disable auth %s after %s", auth.ID, detail)
+		log.WithError(errUpdate).Warnf("xai: failed to move auth %s after no-think", auth.ID)
 		return
 	}
 	if m.fillFirst != nil {
 		m.fillFirst.drop(auth.ID)
 	}
-	log.Warnf("xai: disabled auth %s after %s", auth.ID, detail)
+	if m.fillFirstDownrank != nil {
+		_ = m.fillFirstDownrank.addIdle(auth.ID)
+	}
+	if already {
+		return
+	}
+	detail := "no-think"
+	if noThink != nil && strings.TrimSpace(noThink.Detail) != "" {
+		detail = strings.TrimSpace(noThink.Detail)
+	}
+	log.Warnf("xai: moved auth %s to secondary pool after %s", auth.ID, detail)
+}
+
+func metadataTruthy(meta map[string]any, key string) bool {
+	if meta == nil {
+		return false
+	}
+	raw, ok := meta[key]
+	if !ok || raw == nil {
+		return false
+	}
+	switch v := raw.(type) {
+	case bool:
+		return v
+	case string:
+		s := strings.ToLower(strings.TrimSpace(v))
+		return s == "1" || s == "true" || s == "yes"
+	case float64:
+		return v != 0
+	case int:
+		return v != 0
+	case json.Number:
+		n, err := v.Float64()
+		return err == nil && n != 0
+	default:
+		s := strings.ToLower(strings.TrimSpace(fmt.Sprint(v)))
+		return s == "1" || s == "true" || s == "yes"
+	}
+}
+
+func isXAIDownrankAuth(auth *Auth) bool {
+	if auth == nil || !isXAIProvider(auth.Provider) {
+		return false
+	}
+	auth.mapsMu.RLock()
+	defer auth.mapsMu.RUnlock()
+	return metadataTruthy(auth.Metadata, xaiDownrankPoolKey)
+}
+
+func markXAIDownrank(auth *Auth) {
+	if auth == nil {
+		return
+	}
+	auth.mapsMu.Lock()
+	defer auth.mapsMu.Unlock()
+	if auth.Metadata == nil {
+		auth.Metadata = make(map[string]any)
+	}
+	auth.Metadata[xaiDownrankPoolKey] = true
+}
+
+func unmarkXAIDownrank(auth *Auth) {
+	if auth == nil {
+		return
+	}
+	auth.mapsMu.Lock()
+	defer auth.mapsMu.Unlock()
+	if auth.Metadata == nil {
+		return
+	}
+	delete(auth.Metadata, xaiDownrankPoolKey)
+}
+
+func (m *Manager) restoreAuthFromDownrankPoolByID(authID string) {
+	authID = strings.TrimSpace(authID)
+	if m == nil || authID == "" {
+		return
+	}
+	auth, ok := m.GetByID(authID)
+	if !ok || auth == nil {
+		return
+	}
+	m.restoreAuthFromDownrankPool(context.Background(), auth)
+}
+
+func (m *Manager) restoreAuthFromDownrankPool(ctx context.Context, auth *Auth) bool {
+	if m == nil || auth == nil || !isXAIDownrankAuth(auth) {
+		return false
+	}
+	if ctx == nil {
+		ctx = context.Background()
+	}
+	clone := auth.Clone()
+	if clone == nil {
+		return false
+	}
+	unmarkXAIDownrank(clone)
+	clone.Disabled = false
+	clone.Status = StatusActive
+	clone.StatusMessage = ""
+	clone.Unavailable = false
+	clone.UpdatedAt = time.Now()
+	syncXAIAutoDisableMetadata(clone)
+	if _, errUpdate := m.Update(ctx, clone); errUpdate != nil {
+		log.WithError(errUpdate).Warnf("xai: failed to restore auth %s from secondary pool", auth.ID)
+		return false
+	}
+	log.Infof("xai: restored auth %s from secondary pool after Think stream", auth.ID)
+	return true
+}
+
+func isXAINoThinkStatusMessage(message string) bool {
+	return strings.Contains(strings.ToLower(strings.TrimSpace(message)), "no_think_stream")
+}
+
+func xaiStatusMessageOf(auth *Auth) string {
+	if auth == nil {
+		return ""
+	}
+	auth.mapsMu.RLock()
+	defer auth.mapsMu.RUnlock()
+	msg := strings.TrimSpace(auth.StatusMessage)
+	if metaMsg := metadataString(auth.Metadata, xaiAutoDisableStatusMessageKey); metaMsg != "" {
+		msg = metaMsg
+	}
+	return msg
+}
+
+func isXAINoThinkDisabledAuth(auth *Auth) bool {
+	if auth == nil || !isXAIProvider(auth.Provider) {
+		return false
+	}
+	if !auth.Disabled && auth.Status != StatusDisabled {
+		return false
+	}
+	return isXAINoThinkStatusMessage(xaiStatusMessageOf(auth))
+}
+
+func (m *Manager) promoteNoThinkAuthToDownrank(ctx context.Context, auth *Auth) bool {
+	if m == nil || auth == nil {
+		return false
+	}
+	clone := auth.Clone()
+	if clone == nil {
+		return false
+	}
+	now := time.Now()
+	clone.Disabled = false
+	clone.Status = StatusActive
+	clone.StatusMessage = ""
+	clone.Unavailable = false
+	clone.NextRetryAfter = time.Time{}
+	clone.LastError = nil
+	clone.Quota.Exceeded = false
+	clone.Quota.Reason = ""
+	clone.Quota.NextRecoverAt = time.Time{}
+	clone.Quota.BackoffLevel = 0
+	clone.UpdatedAt = now
+	markXAIDownrank(clone)
+	syncXAIAutoDisableMetadata(clone)
+	if _, errUpdate := m.Update(ctx, clone); errUpdate != nil {
+		log.WithError(errUpdate).Warnf("xai: failed to promote auth %s into secondary pool", auth.ID)
+		return false
+	}
+	if m.fillFirst != nil {
+		m.fillFirst.drop(auth.ID)
+	}
+	if m.fillFirstDownrank != nil {
+		_ = m.fillFirstDownrank.addIdle(auth.ID)
+	}
+	log.Infof("xai: promoted auth %s into secondary pool", auth.ID)
+	return true
+}
+
+func (m *Manager) promoteNoThinkDisabledAuthsToDownrank(ctx context.Context) int {
+	if m == nil {
+		return 0
+	}
+	m.mu.RLock()
+	candidates := make([]*Auth, 0)
+	for _, auth := range m.auths {
+		if auth == nil {
+			continue
+		}
+		snapshot := auth.Clone()
+		if !isXAINoThinkDisabledAuth(snapshot) {
+			continue
+		}
+		candidates = append(candidates, snapshot)
+	}
+	m.mu.RUnlock()
+	promoted := 0
+	for _, auth := range candidates {
+		if m.promoteNoThinkAuthToDownrank(ctx, auth) {
+			promoted++
+		}
+	}
+	return promoted
 }
 
 func isXAIAutoDisabledStatusMessage(message string) bool {
@@ -402,6 +605,9 @@ func xaiDisabledReenableAt(auth *Auth) (time.Time, bool) {
 		// Legacy disabled files are treated as quota-window disables.
 		statusMessage = "quota_exhausted"
 	}
+	if isXAINoThinkStatusMessage(statusMessage) {
+		return time.Time{}, false
+	}
 	if !isXAIAutoDisabledStatusMessage(statusMessage) {
 		return time.Time{}, false
 	}
@@ -493,12 +699,14 @@ func (m *Manager) runXAIDisabledReenableLoop(ctx context.Context) {
 	}
 	ticker := time.NewTicker(time.Minute)
 	defer ticker.Stop()
+	m.promoteNoThinkDisabledAuthsToDownrank(ctx)
 	m.reenableExpiredXAIDisabledAuths(ctx, time.Now())
 	for {
 		select {
 		case <-ctx.Done():
 			return
 		case now := <-ticker.C:
+			m.promoteNoThinkDisabledAuthsToDownrank(ctx)
 			m.reenableExpiredXAIDisabledAuths(ctx, now)
 		}
 	}

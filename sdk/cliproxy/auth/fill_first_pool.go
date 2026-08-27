@@ -14,7 +14,9 @@ const (
 type fillFirstHoldKey struct{}
 
 type fillFirstHold struct {
-	id string
+	id      string
+	pool    *fillFirstPool
+	noRetry bool
 }
 
 type fillFirstPool struct {
@@ -78,20 +80,82 @@ func (p *fillFirstPool) addAndOccupy(id string) bool {
 	if _, busy := p.inFlight[id]; busy {
 		return false
 	}
+	if !p.addLocked(id) {
+		return false
+	}
+	p.inFlight[id] = struct{}{}
+	return true
+}
+
+func (p *fillFirstPool) addIdle(id string) bool {
+	if p == nil || id == "" {
+		return false
+	}
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	return p.addLocked(id)
+}
+
+func (p *fillFirstPool) addLocked(id string) bool {
+	for _, member := range p.members {
+		if member == id {
+			return true
+		}
+	}
+	if len(p.members) >= fillFirstPoolMax {
+		return false
+	}
+	p.members = append(p.members, id)
+	return true
+}
+
+func (p *fillFirstPool) hasMember(id string) bool {
+	if p == nil || id == "" {
+		return false
+	}
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	for _, member := range p.members {
+		if member == id {
+			return true
+		}
+	}
+	return false
+}
+
+func (p *fillFirstPool) inFlightHas(id string) bool {
+	if p == nil || id == "" {
+		return false
+	}
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	_, ok := p.inFlight[id]
+	return ok
+}
+
+func (p *fillFirstPool) dropIfIdle(id string) bool {
+	if p == nil || id == "" {
+		return false
+	}
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	if _, busy := p.inFlight[id]; busy {
+		return false
+	}
+	kept := p.members[:0]
 	found := false
 	for _, member := range p.members {
 		if member == id {
 			found = true
-			break
+			continue
 		}
+		kept = append(kept, member)
 	}
 	if !found {
-		if len(p.members) >= fillFirstPoolMax {
-			return false
-		}
-		p.members = append(p.members, id)
+		return false
 	}
-	p.inFlight[id] = struct{}{}
+	p.members = kept
+	p.wakeLocked()
 	return true
 }
 

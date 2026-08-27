@@ -120,7 +120,7 @@ func (e *XAIExecutor) Execute(ctx context.Context, auth *cliproxyauth.Auth, req 
 			// Only HTTP 200 + response.completed missing Think is no_think_stream.
 			// incomplete / truncated / other errors must not disable accounts or mark sessions.
 			if eventType == "response.completed" {
-				if errThink := xaiGateThinkStream(auth, prepared.body, data, completedData, respOut, nil, nil); errThink != nil {
+				if errThink := xaiGateThinkStream(ctx, auth, prepared.body, data, completedData, respOut, nil, nil); errThink != nil {
 					authID := ""
 					if auth != nil {
 						authID = strings.TrimSpace(auth.ID)
@@ -148,6 +148,8 @@ func (e *XAIExecutor) executeCompact(ctx context.Context, auth *cliproxyauth.Aut
 	if prepared.responseFormat == sdktranslator.FormatOpenAIResponse {
 		out = helps.EnsureResponsesUsageDetails(out)
 	}
+	ev := xaiInspectThinkStream(nil, data, out)
+	xaiNotifyThinkOK(ctx, auth, ev)
 	return cliproxyexecutor.Response{Payload: out, Headers: headers}, nil
 }
 
@@ -233,6 +235,8 @@ func (e *XAIExecutor) executeCompactionTriggerStream(ctx context.Context, auth *
 	}
 	headers.Set("Content-Type", "text/event-stream")
 
+	ev := xaiInspectThinkStream(nil, data, nil)
+	xaiNotifyThinkOK(ctx, auth, ev)
 	chunks := xaiBuildCompactionTriggerStreamChunks(prepared, data)
 	out := make(chan cliproxyexecutor.StreamChunk, len(chunks))
 	for _, chunk := range chunks {

@@ -13,6 +13,7 @@ import (
 	"time"
 
 	internallogging "github.com/router-for-me/CLIProxyAPI/v7/internal/logging"
+	coreexecutor "github.com/router-for-me/CLIProxyAPI/v7/sdk/cliproxy/executor"
 	coreusage "github.com/router-for-me/CLIProxyAPI/v7/sdk/cliproxy/usage"
 	"github.com/router-for-me/CLIProxyAPI/v7/sdk/proxyutil"
 )
@@ -110,12 +111,17 @@ func (p *usagePlugin) HandleUsage(ctx context.Context, record coreusage.Record) 
 		reqType = record.ExecutorType
 	}
 
+	account := firstNonEmpty(record.Account, record.Source)
+	requestClass := coreexecutor.NormalizeRequestClass(record.RequestClass)
+
 	entry := Entry{
 		ID:               requestID + "-" + fmt.Sprintf("%d", timestamp.UnixNano()%1000000),
 		Time:             timestamp,
 		Token:            maskToken(record.APIKey),
+		Account:          account,
 		Group:            firstNonEmpty(record.Provider, record.AuthType, "default"),
 		Type:             reqType,
+		RequestClass:     requestClass,
 		Model:            modelName,
 		LatencyMs:        record.Latency.Milliseconds(),
 		TTFTMs:           record.TTFT.Milliseconds(),
@@ -137,6 +143,7 @@ func (p *usagePlugin) HandleUsage(ctx context.Context, record coreusage.Record) 
 			"auth_type":             record.AuthType,
 			"auth_index":            record.AuthIndex,
 			"executor_type":         record.ExecutorType,
+			"request_class":         requestClass,
 			"think_chars":           thinkingLen,
 			"reasoning_tokens":      detail.ReasoningTokens,
 			"cached_tokens":         detail.CachedTokens,

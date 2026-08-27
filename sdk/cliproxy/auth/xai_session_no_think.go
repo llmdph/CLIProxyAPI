@@ -1,6 +1,7 @@
 package auth
 
 import (
+	"context"
 	"net/http"
 	"strings"
 	"sync"
@@ -12,10 +13,12 @@ import (
 )
 
 const (
-	// ErrorCodeGrokSessionMarked is returned after a conversation hits consecutive no-thinks.
+	// ErrorCodeGrokSessionMarked is retained for log compatibility; sessions are no longer marked.
 	ErrorCodeGrokSessionMarked = "session_marked"
 
-	grokSessionNoThinkLimit      = 2
+	// grokSessionNoThinkLimit is how many consecutive HTTP 200 no-thinks the main
+	// pool rotates through before returning the last response body to the client.
+	grokSessionNoThinkLimit      = 3
 	grokSessionMarkedTTL         = 24 * time.Hour
 	grokSessionMarkedMessage     = "会话被标记，请更换会话"
 	grokSessionNoThinkMaxEntries = 4096
@@ -74,41 +77,45 @@ func grokConversationSessionID(req cliproxyexecutor.Request, opts cliproxyexecut
 	return metadataString(req.Metadata, cliproxyexecutor.DerivedSessionIDMetadataKey)
 }
 
-func (m *Manager) errIfGrokSessionMarked(req cliproxyexecutor.Request, opts cliproxyexecutor.Options) error {
-	sessionID := grokConversationSessionID(req, opts)
-	if sessionID == "" || m == nil || m.grokSessionNoThink == nil {
-		return nil
+func skipGrokSessionNoThinkMark(ctx context.Context, opts cliproxyexecutor.Options) bool {
+	if cliproxyexecutor.RequestClassUsesAuxPool(cliproxyexecutor.RequestClassFromContext(ctx)) {
+		return true
 	}
-	if !m.grokSessionNoThink.marked(sessionID) {
-		return nil
-	}
-	log.Warnf("xai: rejecting marked grok session %s", truncateSessionID(sessionID))
-	return wrapRequestStopError(newGrokSessionMarkedError())
+	return cliproxyexecutor.RequestClassUsesAuxPool(cliproxyexecutor.RequestClassFromMetadata(opts.Metadata))
 }
 
-func (m *Manager) handleGrokSessionNoThink(req cliproxyexecutor.Request, opts cliproxyexecutor.Options, consecutive *int, err error) error {
+func (m *Manager) errIfGrokSessionMarked(ctx context.Context, req cliproxyexecutor.Request, opts cliproxyexecutor.Options) error {
+	if m != nil && m.grokSessionNoThink != nil {
+		if n := m.grokSessionNoThink.clearAll(); n > 0 {
+			log.Infof("xai: cleared %d leftover grok session marks", n)
+		}
+	}
+	return nil
+}
+
+// handleGrokSessionNoThink counts consecutive HTTP 200 no-thinks on the main
+// pool. After grokSessionNoThinkLimit attempts the caller should return the
+// last response body. Accounts are still moved to the downrank pool by the
+// caller; conversations are not marked.
+func (m *Manager) handleGrokSessionNoThink(ctx context.Context, req cliproxyexecutor.Request, opts cliproxyexecutor.Options, consecutive *int, err error) bool {
+	if skipGrokSessionNoThinkMark(ctx, opts) {
+		return false
+	}
 	// AsNoThinkStream is the existing HTTP 200 + response.completed missing-Think signal.
 	// Quota, incomplete, disconnects, and other upstream errors must not count.
 	if _, ok := cliproxyexecutor.AsNoThinkStream(err); !ok {
-		return nil
+		return false
 	}
-	if consecutive != nil {
-		*consecutive++
+	if consecutive == nil {
+		return false
+	}
+	*consecutive++
+	if *consecutive < grokSessionNoThinkLimit {
+		return false
 	}
 	sessionID := grokConversationSessionID(req, opts)
-	reached := consecutive != nil && *consecutive >= grokSessionNoThinkLimit
-	if sessionID != "" && m != nil && m.grokSessionNoThink != nil && m.grokSessionNoThink.note(sessionID) {
-		reached = true
-	}
-	if !reached {
-		return nil
-	}
-	count := 0
-	if consecutive != nil {
-		count = *consecutive
-	}
-	log.Warnf("xai: grok session marked after consecutive no-think session=%s count=%d", truncateSessionID(sessionID), count)
-	return wrapRequestStopError(newGrokSessionMarkedError())
+	log.Warnf("xai: returning no-think content after %d consecutive attempts session=%s", *consecutive, truncateSessionID(sessionID))
+	return true
 }
 
 func (m *Manager) clearGrokSessionNoThink(req cliproxyexecutor.Request, opts cliproxyexecutor.Options) {
@@ -120,28 +127,23 @@ func (m *Manager) clearGrokSessionNoThink(req cliproxyexecutor.Request, opts cli
 }
 
 func (t *grokSessionNoThinkTracker) note(sessionID string) bool {
-	sessionID = strings.TrimSpace(sessionID)
-	if t == nil || sessionID == "" {
-		return false
+	return false
+}
+
+func (t *grokSessionNoThinkTracker) clearAll() int {
+	if t == nil {
+		return 0
 	}
-	now := time.Now()
 	t.mu.Lock()
 	defer t.mu.Unlock()
-	t.purgeExpiredLocked(now)
-	entry := t.sessions[sessionID]
-	if entry.marked && (entry.expiresAt.IsZero() || now.Before(entry.expiresAt)) {
-		return true
+	n := 0
+	for id, entry := range t.sessions {
+		if entry.marked {
+			n++
+		}
+		delete(t.sessions, id)
 	}
-	if !entry.expiresAt.IsZero() && !now.Before(entry.expiresAt) {
-		entry = grokSessionNoThinkEntry{}
-	}
-	entry.consecutive++
-	entry.expiresAt = now.Add(grokSessionMarkedTTL)
-	if entry.consecutive >= grokSessionNoThinkLimit {
-		entry.marked = true
-	}
-	t.sessions[sessionID] = entry
-	return entry.marked
+	return n
 }
 
 func (t *grokSessionNoThinkTracker) marked(sessionID string) bool {

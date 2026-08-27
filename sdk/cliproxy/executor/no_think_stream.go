@@ -11,7 +11,8 @@ import (
 // (or 有(0字)). Quota, incomplete, disconnects, and other upstream errors
 // must not use this type. Auth managers should disable the credential,
 // retry with another account (up to a small cap), and after the cap return
-// FallbackResponse / FallbackStreamChunks to the client.
+	// FallbackResponse / FallbackStreamChunks to the client. Conversations are
+	// not marked; the no-think credential is moved to the downrank pool.
 type NoThinkStreamError struct {
 	AuthID       string
 	Detail       string

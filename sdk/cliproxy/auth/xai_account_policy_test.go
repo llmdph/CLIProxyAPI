@@ -371,3 +371,433 @@ func TestReenableExpiredXAIDisabledAuthsSkipsNonOutlook(t *testing.T) {
 		t.Fatalf("non-outlook auth was re-enabled: disabled=%v status=%s", updated.Disabled, updated.Status)
 	}
 }
+
+func TestRestoreAuthFromDownrankPoolOnThink(t *testing.T) {
+	t.Parallel()
+	m := NewManager(nil, nil, nil)
+	auth := &Auth{
+		ID:       "xai-restore@outlook.com",
+		Provider: "xai",
+		Status:   StatusActive,
+		Metadata: map[string]any{"type": "xai", "email": "xai-restore@outlook.com"},
+	}
+	if _, err := m.Register(context.Background(), auth); err != nil {
+		t.Fatalf("register: %v", err)
+	}
+	got, ok := m.GetByID(auth.ID)
+	if !ok || got == nil {
+		t.Fatal("missing auth")
+	}
+	markXAIDownrank(got)
+	if _, err := m.Update(context.Background(), got); err != nil {
+		t.Fatalf("mark: %v", err)
+	}
+	if !m.fillFirstDownrank.addIdle(auth.ID) {
+		t.Fatal("seed downrank")
+	}
+	updated, _ := m.GetByID(auth.ID)
+	if !m.restoreAuthFromDownrankPool(context.Background(), updated) {
+		t.Fatal("restore returned false")
+	}
+	updated, ok = m.GetByID(auth.ID)
+	if !ok || updated == nil {
+		t.Fatal("missing restored auth")
+	}
+	if isXAIDownrankAuth(updated) {
+		t.Fatal("downrank mark still set")
+	}
+	if m.fillFirstDownrank.hasMember(auth.ID) {
+		t.Fatal("still in secondary pool")
+	}
+	if !m.fillFirst.hasMember(auth.ID) {
+		t.Fatal("not returned to main pool")
+	}
+}
+
+func TestRestoreAuthFromDownrankPoolSkipsMainWhileInFlight(t *testing.T) {
+	t.Parallel()
+	m := NewManager(nil, nil, nil)
+	auth := &Auth{
+		ID:       "xai-busy-restore@outlook.com",
+		Provider: "xai",
+		Status:   StatusActive,
+		Metadata: map[string]any{"type": "xai", "email": "xai-busy-restore@outlook.com"},
+	}
+	if _, err := m.Register(context.Background(), auth); err != nil {
+		t.Fatalf("register: %v", err)
+	}
+	got, ok := m.GetByID(auth.ID)
+	if !ok || got == nil {
+		t.Fatal("missing auth")
+	}
+	markXAIDownrank(got)
+	if _, err := m.Update(context.Background(), got); err != nil {
+		t.Fatalf("mark: %v", err)
+	}
+	if !m.fillFirstDownrank.addAndOccupy(auth.ID) {
+		t.Fatal("occupy downrank")
+	}
+	updated, _ := m.GetByID(auth.ID)
+	if !m.restoreAuthFromDownrankPool(context.Background(), updated) {
+		t.Fatal("restore returned false")
+	}
+	updated, ok = m.GetByID(auth.ID)
+	if !ok || updated == nil {
+		t.Fatal("missing restored auth")
+	}
+	if isXAIDownrankAuth(updated) {
+		t.Fatal("downrank mark still set")
+	}
+	if !m.fillFirstDownrank.hasMember(auth.ID) {
+		t.Fatal("in-flight auth left secondary pool too early")
+	}
+	if m.fillFirst.hasMember(auth.ID) {
+		t.Fatal("in-flight auth parked on main pool")
+	}
+}
+
+func TestUpdateUnmarkMovesIdleAuthOutOfDownrankPool(t *testing.T) {
+	t.Parallel()
+	m := NewManager(nil, nil, nil)
+	auth := &Auth{
+		ID:       "xai-patch-restore@outlook.com",
+		Provider: "xai",
+		Status:   StatusActive,
+		Metadata: map[string]any{"type": "xai", "email": "xai-patch-restore@outlook.com", "xai_downrank_pool": true},
+	}
+	if _, err := m.Register(context.Background(), auth); err != nil {
+		t.Fatalf("register: %v", err)
+	}
+	if !m.fillFirstDownrank.addIdle(auth.ID) {
+		t.Fatal("seed downrank")
+	}
+	got, ok := m.GetByID(auth.ID)
+	if !ok || got == nil {
+		t.Fatal("missing auth")
+	}
+	unmarkXAIDownrank(got)
+	if _, err := m.Update(context.Background(), got); err != nil {
+		t.Fatalf("unmark: %v", err)
+	}
+	updated, _ := m.GetByID(auth.ID)
+	if isXAIDownrankAuth(updated) {
+		t.Fatal("downrank mark still set")
+	}
+	if m.fillFirstDownrank.hasMember(auth.ID) {
+		t.Fatal("still in secondary pool after idle unmark")
+	}
+	if !m.fillFirst.hasMember(auth.ID) {
+		t.Fatal("idle unmark did not return to main pool")
+	}
+}
+
+func TestThinkOKCallbackRestoresDownrankAuth(t *testing.T) {
+	t.Parallel()
+	m := NewManager(nil, &FillFirstSelector{}, nil)
+	auth := &Auth{
+		ID:       "xai-thinkok-restore@outlook.com",
+		Provider: "xai",
+		Status:   StatusActive,
+		Metadata: map[string]any{"type": "xai", "email": "xai-thinkok-restore@outlook.com"},
+	}
+	if _, err := m.Register(context.Background(), auth); err != nil {
+		t.Fatalf("register: %v", err)
+	}
+	got, _ := m.GetByID(auth.ID)
+	markXAIDownrank(got)
+	if _, err := m.Update(context.Background(), got); err != nil {
+		t.Fatalf("mark: %v", err)
+	}
+	if !m.fillFirstDownrank.addIdle(auth.ID) {
+		t.Fatal("seed downrank")
+	}
+	opts := cliproxyexecutor.Options{}
+	ctx, finish := m.beginFillFirstHold(context.Background(), cliproxyexecutor.Request{Payload: []byte(`{"input":"hello","reasoning":{"effort":"high"}}`)}, &opts)
+	t.Cleanup(finish)
+	cliproxyexecutor.NotifyXAIThinkOK(ctx, auth.ID)
+	updated, ok := m.GetByID(auth.ID)
+	if !ok || updated == nil {
+		t.Fatal("missing auth")
+	}
+	if isXAIDownrankAuth(updated) {
+		t.Fatal("Think-OK did not clear downrank mark")
+	}
+	if m.fillFirstDownrank.hasMember(auth.ID) {
+		t.Fatal("Think-OK left auth in secondary pool")
+	}
+	if !m.fillFirst.hasMember(auth.ID) {
+		t.Fatal("Think-OK did not return idle auth to main pool")
+	}
+}
+
+func TestMoveAuthToDownrankPoolKeepsEnabled(t *testing.T) {
+	t.Parallel()
+	m := NewManager(nil, nil, nil)
+	auth := &Auth{
+		ID:       "xai-nothink@outlook.com",
+		Provider: "xai",
+		Status:   StatusActive,
+		Metadata: map[string]any{"type": "xai", "email": "xai-nothink@outlook.com"},
+	}
+	if _, err := m.Register(context.Background(), auth); err != nil {
+		t.Fatalf("register: %v", err)
+	}
+	if !m.fillFirst.addIdle(auth.ID) {
+		t.Fatal("seed main pool")
+	}
+	m.disableAuthForNoThink(context.Background(), auth, &cliproxyexecutor.NoThinkStreamError{Detail: "missing think"})
+	updated, ok := m.GetByID("xai-nothink@outlook.com")
+	if !ok || updated == nil {
+		t.Fatal("missing auth")
+	}
+	if updated.Disabled || updated.Status != StatusActive {
+		t.Fatalf("auth disabled after no-think: disabled=%v status=%s", updated.Disabled, updated.Status)
+	}
+	if updated.StatusMessage != "" {
+		t.Fatalf("status message leaked: %q", updated.StatusMessage)
+	}
+	if !isXAIDownrankAuth(updated) {
+		t.Fatal("expected downrank mark")
+	}
+	if m.fillFirst.hasMember(auth.ID) {
+		t.Fatal("main pool still has no-think auth")
+	}
+	if !m.fillFirstDownrank.hasMember(auth.ID) {
+		t.Fatal("secondary pool missing no-think auth")
+	}
+}
+
+func TestPromoteNoThinkDisabledAuthsToDownrank(t *testing.T) {
+	t.Parallel()
+	m := NewManager(nil, nil, nil)
+	now := time.Now()
+	noThink := &Auth{
+		ID:            "xai-old-nothink@outlook.com",
+		Provider:      "xai",
+		Disabled:      true,
+		Status:        StatusDisabled,
+		StatusMessage: "no_think_stream: missing think",
+		UpdatedAt:     now.Add(-2 * time.Hour),
+		Metadata:      map[string]any{"type": "xai", "email": "xai-old-nothink@outlook.com"},
+	}
+	quota := &Auth{
+		ID:             "xai-quota-keep@outlook.com",
+		Provider:       "xai",
+		Disabled:       true,
+		Status:         StatusDisabled,
+		StatusMessage:  "quota_exhausted: free-usage-exhausted",
+		UpdatedAt:      now.Add(-2 * time.Hour),
+		NextRetryAfter: now.Add(22 * time.Hour),
+		Metadata:       map[string]any{"type": "xai", "email": "xai-quota-keep@outlook.com"},
+	}
+	if _, err := m.Register(context.Background(), noThink); err != nil {
+		t.Fatalf("register no-think: %v", err)
+	}
+	if _, err := m.Register(context.Background(), quota); err != nil {
+		t.Fatalf("register quota: %v", err)
+	}
+	if n := m.promoteNoThinkDisabledAuthsToDownrank(context.Background()); n != 1 {
+		t.Fatalf("promoted = %d, want 1", n)
+	}
+	updated, ok := m.GetByID(noThink.ID)
+	if !ok || updated == nil {
+		t.Fatal("missing promoted auth")
+	}
+	if updated.Disabled || updated.Status != StatusActive {
+		t.Fatalf("no-think auth not enabled: disabled=%v status=%s", updated.Disabled, updated.Status)
+	}
+	if !isXAIDownrankAuth(updated) {
+		t.Fatal("promoted auth missing downrank mark")
+	}
+	if !m.fillFirstDownrank.hasMember(noThink.ID) {
+		t.Fatal("promoted auth not in secondary pool")
+	}
+	kept, ok := m.GetByID(quota.ID)
+	if !ok || kept == nil {
+		t.Fatal("missing quota auth")
+	}
+	if !kept.Disabled || kept.Status != StatusDisabled {
+		t.Fatalf("quota auth was promoted: disabled=%v status=%s", kept.Disabled, kept.Status)
+	}
+}
+
+func TestXAIDisabledReenableAtSkipsNoThink(t *testing.T) {
+	t.Parallel()
+	auth := &Auth{
+		ID:            "xai-nothink-wait@outlook.com",
+		Provider:      "xai",
+		Disabled:      true,
+		Status:        StatusDisabled,
+		StatusMessage: "no_think_stream",
+		UpdatedAt:     time.Now().Add(-30 * time.Hour),
+		Metadata:      map[string]any{"email": "xai-nothink-wait@outlook.com", "type": "xai"},
+	}
+	if _, ok := xaiDisabledReenableAt(auth); ok {
+		t.Fatal("no-think disable should not use 24h quota re-enable")
+	}
+}
+
+func TestPickRandomAvailableAuthSeparatesDownrank(t *testing.T) {
+	t.Parallel()
+	m := NewManager(nil, nil, nil)
+	m.RegisterExecutor(quotaStreamFailExecutor{failID: "never"})
+	mainAuth := &Auth{ID: "xai-main@outlook.com", Provider: "xai", Status: StatusActive, Metadata: map[string]any{"type": "xai", "email": "xai-main@outlook.com"}}
+	downAuth := &Auth{ID: "xai-down@outlook.com", Provider: "xai", Status: StatusActive, Metadata: map[string]any{"type": "xai", "email": "xai-down@outlook.com"}}
+	if _, err := m.Register(context.Background(), mainAuth); err != nil {
+		t.Fatalf("register main: %v", err)
+	}
+	if _, err := m.Register(context.Background(), downAuth); err != nil {
+		t.Fatalf("register down: %v", err)
+	}
+	got, ok := m.GetByID(downAuth.ID)
+	if !ok || got == nil {
+		t.Fatal("missing down auth")
+	}
+	markXAIDownrank(got)
+	if _, err := m.Update(context.Background(), got); err != nil {
+		t.Fatalf("mark downrank: %v", err)
+	}
+	picked, _, _, err := m.pickRandomAvailableAuth("grok-4.6", nil, nil, false)
+	if err != nil {
+		t.Fatalf("main pick: %v", err)
+	}
+	if picked.ID != mainAuth.ID {
+		t.Fatalf("main pick = %s, want %s", picked.ID, mainAuth.ID)
+	}
+	picked, _, _, err = m.pickRandomAvailableAuth("grok-4.6", nil, nil, true)
+	if err != nil {
+		t.Fatalf("downrank pick: %v", err)
+	}
+	if picked.ID != downAuth.ID {
+		t.Fatalf("downrank pick = %s, want %s", picked.ID, downAuth.ID)
+	}
+}
+
+func TestPruneFillFirstMembersDropsDownrankFromMain(t *testing.T) {
+	t.Parallel()
+	m := NewManager(nil, nil, nil)
+	mainAuth := &Auth{ID: "xai-keep-main", Provider: "xai", Status: StatusActive, Metadata: map[string]any{"type": "xai"}}
+	downAuth := &Auth{ID: "xai-keep-down", Provider: "xai", Status: StatusActive, Metadata: map[string]any{"type": "xai"}}
+	if _, err := m.Register(context.Background(), mainAuth); err != nil {
+		t.Fatalf("register main: %v", err)
+	}
+	if _, err := m.Register(context.Background(), downAuth); err != nil {
+		t.Fatalf("register down: %v", err)
+	}
+	got, _ := m.GetByID(downAuth.ID)
+	markXAIDownrank(got)
+	if _, err := m.Update(context.Background(), got); err != nil {
+		t.Fatalf("mark: %v", err)
+	}
+	if !m.fillFirst.addIdle(mainAuth.ID) || !m.fillFirst.addIdle(downAuth.ID) {
+		t.Fatal("seed main")
+	}
+	if !m.fillFirstDownrank.addIdle(mainAuth.ID) || !m.fillFirstDownrank.addIdle(downAuth.ID) {
+		t.Fatal("seed downrank")
+	}
+	m.pruneFillFirstMembers()
+	if !m.fillFirst.hasMember(mainAuth.ID) || m.fillFirst.hasMember(downAuth.ID) {
+		t.Fatalf("main members=%v", m.fillFirst.memberIDs())
+	}
+	if m.fillFirstDownrank.hasMember(mainAuth.ID) || !m.fillFirstDownrank.hasMember(downAuth.ID) {
+		t.Fatalf("downrank members=%v", m.fillFirstDownrank.memberIDs())
+	}
+}
+
+func TestPruneFillFirstDownrankDropsUnmarkedWhenEmpty(t *testing.T) {
+	t.Parallel()
+	m := NewManager(nil, nil, nil)
+	mainAuth := &Auth{ID: "xai-only-main", Provider: "xai", Status: StatusActive, Metadata: map[string]any{"type": "xai"}}
+	if _, err := m.Register(context.Background(), mainAuth); err != nil {
+		t.Fatalf("register: %v", err)
+	}
+	if !m.fillFirstDownrank.addIdle(mainAuth.ID) {
+		t.Fatal("seed downrank")
+	}
+	m.pruneFillFirstMembers()
+	if m.fillFirstDownrank.hasMember(mainAuth.ID) {
+		t.Fatalf("unmarked auth stayed in downrank pool: %v", m.fillFirstDownrank.memberIDs())
+	}
+}
+
+func TestPickRandomAvailableAuthDownrankWithoutMarkedFails(t *testing.T) {
+	t.Parallel()
+	m := NewManager(nil, nil, nil)
+	m.RegisterExecutor(quotaStreamFailExecutor{failID: "never"})
+	mainAuth := &Auth{ID: "xai-only-main@outlook.com", Provider: "xai", Status: StatusActive, Metadata: map[string]any{"type": "xai", "email": "xai-only-main@outlook.com"}}
+	if _, err := m.Register(context.Background(), mainAuth); err != nil {
+		t.Fatalf("register: %v", err)
+	}
+	if _, _, _, err := m.pickRandomAvailableAuth("grok-4.6", nil, nil, true); err == nil {
+		t.Fatal("downrank pick with no marked accounts should fail")
+	}
+	picked, _, _, err := m.pickRandomAvailableAuth("grok-4.6", nil, nil, false)
+	if err != nil {
+		t.Fatalf("main pick: %v", err)
+	}
+	if picked.ID != mainAuth.ID {
+		t.Fatalf("main pick = %s", picked.ID)
+	}
+}
+
+func TestDisableXAIAuthIfQuotaExhaustedSkipsAuxPool(t *testing.T) {
+	t.Parallel()
+	m := NewManager(nil, nil, nil)
+	auth := &Auth{
+		ID:       "xai-aux-quota@outlook.com",
+		Provider: "xai",
+		Status:   StatusActive,
+		Metadata: map[string]any{"type": "xai", "email": "xai-aux-quota@outlook.com"},
+	}
+	if _, err := m.Register(context.Background(), auth); err != nil {
+		t.Fatalf("register: %v", err)
+	}
+	quotaErr := errors.New(`{"code":"subscription:free-usage-exhausted","error":"You've used all the included free usage"}`)
+	ctx := cliproxyexecutor.WithRequestClass(context.Background(), cliproxyexecutor.RequestClassCompaction)
+	if m.disableXAIAuthIfQuotaExhausted(ctx, auth, "xai", quotaErr) {
+		t.Fatal("compaction must not trigger quota_exhausted disable")
+	}
+	updated, ok := m.GetByID(auth.ID)
+	if !ok || updated == nil {
+		t.Fatal("missing auth")
+	}
+	if updated.Disabled || updated.Status == StatusDisabled {
+		t.Fatalf("aux quota disabled auth: disabled=%v status=%s", updated.Disabled, updated.Status)
+	}
+}
+
+func TestExecuteStreamCompactionSkipsQuotaDisable(t *testing.T) {
+	m := NewManager(nil, &FillFirstSelector{}, nil)
+	failID := "xai-compact-quota@outlook.com"
+	model := "grok-4.6"
+	m.RegisterExecutor(quotaStreamFailExecutor{failID: failID})
+	reg := registry.GetGlobalRegistry()
+	reg.RegisterClient(failID, "xai", []*registry.ModelInfo{{ID: model}})
+	t.Cleanup(func() { reg.UnregisterClient(failID) })
+	auth := &Auth{
+		ID:       failID,
+		Provider: "xai",
+		Status:   StatusActive,
+		Metadata: map[string]any{"type": "xai", "email": failID},
+	}
+	if _, err := m.Register(context.Background(), auth); err != nil {
+		t.Fatalf("register %s: %v", failID, err)
+	}
+	_, err := m.ExecuteStream(context.Background(), []string{"xai"}, cliproxyexecutor.Request{
+		Model:   model,
+		Payload: []byte(`{"input":[{"type":"compaction_trigger"}],"reasoning":{"effort":"xhigh"}}`),
+	}, cliproxyexecutor.Options{Stream: true})
+	if err == nil {
+		t.Fatal("ExecuteStream() error = nil, want quota exhausted")
+	}
+	if !isXAIQuotaExhaustedError(err) {
+		t.Fatalf("ExecuteStream() error = %v, want quota exhausted", err)
+	}
+	kept, ok := m.GetByID(failID)
+	if !ok || kept == nil {
+		t.Fatal("missing auth")
+	}
+	if kept.Disabled || kept.Status == StatusDisabled {
+		t.Fatalf("compaction quota disabled auth: disabled=%v status=%s message=%q", kept.Disabled, kept.Status, kept.StatusMessage)
+	}
+}

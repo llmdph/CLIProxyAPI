@@ -168,7 +168,7 @@ func (e *XAIExecutor) ExecuteStream(ctx context.Context, auth *cliproxyauth.Auth
 	if len(completedData) == 0 {
 		return nil, statusErr{code: http.StatusRequestTimeout, msg: "xai stream error: stream disconnected before response.completed"}
 	}
-	if errThink := xaiGateThinkStream(auth, prepared.body, rawSSE, completedData, cliproxyexecutor.Response{}, headers, translatedChunks); errThink != nil {
+	if errThink := xaiGateThinkStream(ctx, auth, prepared.body, rawSSE, completedData, cliproxyexecutor.Response{}, headers, translatedChunks); errThink != nil {
 		authID := ""
 		if auth != nil {
 			authID = strings.TrimSpace(auth.ID)

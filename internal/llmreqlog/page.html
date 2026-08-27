@@ -112,6 +112,18 @@
     <div class="panel">
       <div class="toolbar">
         <button class="primary" onclick="loadLogs()">刷新</button>
+        <label>请求
+          <select id="klass" onchange="loadLogs()">
+            <option value="">全部</option>
+            <option value="normal">正常请求</option>
+            <option value="session_name">新会话名称</option>
+            <option value="compaction">压缩请求</option>
+            <option value="internal">内部请求</option>
+          </select>
+        </label>
+        <label>账号
+          <input id="account" type="search" placeholder="邮箱/账号" style="min-width:180px;padding:6px 8px;border:1px solid var(--line);border-radius:8px;" onkeydown="if(event.key==='Enter')loadLogs()" />
+        </label>
         <label><input type="checkbox" id="auto" checked /> 自动刷新</label>
         <span class="meta" id="hint"></span>
       </div>
@@ -121,7 +133,9 @@
             <tr>
               <th>时间</th>
               <th>令牌</th>
+              <th>账号</th>
               <th>分组</th>
+              <th>请求</th>
               <th>类型</th>
               <th>模型</th>
               <th>用时/首字</th>
@@ -144,6 +158,15 @@
     const summary = document.getElementById('summary');
     const hint = document.getElementById('hint');
     let timer = null;
+
+    function classLabel(value) {
+      switch (String(value || '')) {
+        case 'session_name': return '新会话名称';
+        case 'compaction': return '压缩请求';
+        case 'internal': return '内部请求';
+        default: return '正常请求';
+      }
+    }
 
     function esc(value) {
       return String(value ?? '').replace(/[&<>"']/g, (ch) => ({
@@ -180,7 +203,12 @@
         const headers = { 'Accept': 'application/json' };
         const key = managementKey();
         if (key) headers['X-Management-Key'] = key;
-        const response = await fetch('/v0/management/llm-request-logs?limit=200', {
+        const klass = document.getElementById('klass')?.value || '';
+        const account = document.getElementById('account')?.value?.trim() || '';
+        const qs = new URLSearchParams({ limit: '200' });
+        if (klass) qs.set('class', klass);
+        if (account) qs.set('account', account);
+        const response = await fetch('/v0/management/llm-request-logs?' + qs.toString(), {
           headers,
           credentials: 'same-origin'
         });
@@ -201,7 +229,9 @@
           return `<tr>
             <td>${fmtTime(item.time)}</td>
             <td>${esc(item.token)}</td>
+            <td>${esc(item.account || '-')}</td>
             <td><span class="pill">${esc(item.group)}</span></td>
+            <td><span class="pill">${esc(classLabel(item.request_class))}</span></td>
             <td class="${statusClass}">${esc(item.type)}</td>
             <td>${esc(item.model)}</td>
             <td>${esc(item.latency_ms)}ms / ${esc(item.ttft_ms)}ms</td>

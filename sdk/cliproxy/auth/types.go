@@ -614,6 +614,21 @@ func (a *Auth) AccountInfo() (string, string) {
 	}
 }
 
+// DisplayAccount returns a human-readable account label for logs.
+func (a *Auth) DisplayAccount() string {
+	if email := xaiAuthEmail(a); email != "" {
+		return email
+	}
+	if a == nil {
+		return ""
+	}
+	if label := strings.TrimSpace(a.Label); label != "" {
+		return label
+	}
+	_, value := a.AccountInfo()
+	return strings.TrimSpace(value)
+}
+
 // ExpirationTime attempts to extract the credential expiration timestamp from metadata.
 // It inspects common keys such as "expired", "expire", "expires_at", and also
 // nested "token" objects to remain compatible with legacy auth file formats.

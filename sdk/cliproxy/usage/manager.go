@@ -28,6 +28,8 @@ type Record struct {
 	APIKey       string
 	AuthID       string
 	AuthIndex    string
+	Account      string
+	RequestClass string
 	// AccessTokenSHA256 identifies the OAuth token version without exposing the token.
 	AccessTokenSHA256 string
 	AuthType          string

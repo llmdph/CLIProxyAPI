@@ -3,6 +3,7 @@ package api
 import (
 	"context"
 	"fmt"
+	"path/filepath"
 	"time"
 
 	"github.com/router-for-me/CLIProxyAPI/v7/internal/access"
@@ -174,6 +175,7 @@ func (s *Server) UpdateClientsContext(ctx context.Context, cfg *config.Config) b
 	}
 	managementasset.SetCurrentConfig(cfg)
 	llmreqlog.SetProxyURL(cfg.ProxyURL)
+	llmreqlog.SetPersistPath(filepath.Join(logging.ResolveLogDirectory(cfg), "llm-request-logs.json"))
 	if errContext := ctx.Err(); errContext != nil {
 		return false
 	}

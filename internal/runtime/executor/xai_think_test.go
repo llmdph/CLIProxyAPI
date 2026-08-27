@@ -1,6 +1,7 @@
 package executor
 
 import (
+	"context"
 	"testing"
 
 	cliproxyauth "github.com/router-for-me/CLIProxyAPI/v7/sdk/cliproxy/auth"
@@ -40,7 +41,7 @@ func TestXAIGateThinkStream(t *testing.T) {
 	auth := &cliproxyauth.Auth{ID: "auth-1"}
 	upstream := []byte(`{"reasoning":{"effort":"high"}}`)
 	raw := []byte("data: {\"type\":\"response.output_item.done\",\"item\":{\"type\":\"reasoning\",\"summary\":[]}}\n")
-	err := xaiGateThinkStream(auth, upstream, raw, nil, cliproxyexecutor.Response{Payload: []byte(`{}`)}, nil, nil)
+	err := xaiGateThinkStream(context.Background(), auth, upstream, raw, nil, cliproxyexecutor.Response{Payload: []byte(`{}`)}, nil, nil)
 	if err == nil {
 		t.Fatal("expected no_think_stream error")
 	}
@@ -49,3 +50,43 @@ func TestXAIGateThinkStream(t *testing.T) {
 		t.Fatalf("unexpected error: %#v", err)
 	}
 }
+
+func TestXAIGateThinkStreamSkipsAuxPool(t *testing.T) {
+	auth := &cliproxyauth.Auth{ID: "auth-aux"}
+	upstream := []byte(`{"reasoning":{"effort":"xhigh"}}`)
+	raw := []byte("data: {\"type\":\"response.output_item.done\",\"item\":{\"type\":\"reasoning\",\"summary\":[]}}\n")
+	ctx := cliproxyexecutor.WithRequestClass(context.Background(), cliproxyexecutor.RequestClassCompaction)
+	if err := xaiGateThinkStream(ctx, auth, upstream, raw, nil, cliproxyexecutor.Response{Payload: []byte(`{}`)}, nil, nil); err != nil {
+		t.Fatalf("aux pool should skip think gate: %v", err)
+	}
+}
+
+func TestXAIGateThinkStreamNotifiesOnThink(t *testing.T) {
+	auth := &cliproxyauth.Auth{ID: "auth-ok"}
+	upstream := []byte(`{"reasoning":{"effort":"high"}}`)
+	raw := []byte("data: {\"type\":\"response.reasoning_text.delta\",\"delta\":\"hello\"}\n")
+	var got string
+	ctx := cliproxyexecutor.WithXAIThinkOK(context.Background(), func(authID string) { got = authID })
+	if err := xaiGateThinkStream(ctx, auth, upstream, raw, nil, cliproxyexecutor.Response{}, nil, nil); err != nil {
+		t.Fatalf("good think should pass: %v", err)
+	}
+	if got != "auth-ok" {
+		t.Fatalf("NotifyXAIThinkOK auth=%q, want auth-ok", got)
+	}
+}
+
+func TestXAIGateThinkStreamAuxWithThinkNotifies(t *testing.T) {
+	auth := &cliproxyauth.Auth{ID: "auth-aux"}
+	upstream := []byte(`{"reasoning":{"effort":"xhigh"}}`)
+	raw := []byte("data: {\"type\":\"response.reasoning_text.delta\",\"delta\":\"hello\"}\n")
+	var got string
+	ctx := cliproxyexecutor.WithRequestClass(context.Background(), cliproxyexecutor.RequestClassCompaction)
+	ctx = cliproxyexecutor.WithXAIThinkOK(ctx, func(authID string) { got = authID })
+	if err := xaiGateThinkStream(ctx, auth, upstream, raw, nil, cliproxyexecutor.Response{}, nil, nil); err != nil {
+		t.Fatalf("aux good think should pass: %v", err)
+	}
+	if got != "auth-aux" {
+		t.Fatalf("aux NotifyXAIThinkOK auth=%q, want auth-aux", got)
+	}
+}
+

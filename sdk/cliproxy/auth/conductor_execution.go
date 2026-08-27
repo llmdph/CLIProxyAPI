@@ -44,11 +44,13 @@ func claudeOAuthRequestCancellation(ctx context.Context, auth *Auth, err error) 
 // It supports multiple providers for the same model and round-robins the starting provider per model.
 func (m *Manager) Execute(ctx context.Context, providers []string, req cliproxyexecutor.Request, opts cliproxyexecutor.Options) (cliproxyexecutor.Response, error) {
 	req, opts = cliproxysession.Enrich(req, opts)
-	if errMarked := m.errIfGrokSessionMarked(req, opts); errMarked != nil {
-		return cliproxyexecutor.Response{}, errMarked
-	}
-	ctx, finish := m.beginFillFirstHold(ctx)
+	ctx, finish := m.beginFillFirstHold(ctx, req, &opts)
 	defer finish()
+	if !skipCredentialRetry(ctx) {
+		if errMarked := m.errIfGrokSessionMarked(ctx, req, opts); errMarked != nil {
+			return cliproxyexecutor.Response{}, errMarked
+		}
+	}
 	normalized := m.normalizeProviders(providers)
 	if len(normalized) == 0 {
 		return cliproxyexecutor.Response{}, &Error{Code: "provider_not_found", Message: "no provider supplied"}
@@ -62,6 +64,9 @@ func (m *Manager) Execute(ctx context.Context, providers []string, req cliproxye
 	}
 
 	defaultRequestRetry, maxRetryCredentials, maxWait := m.retrySettings()
+	if skipCredentialRetry(ctx) {
+		maxRetryCredentials = 1
+	}
 
 	var lastErr error
 	retryModel := authSelectionModelFromOptions(opts, req.Model)
@@ -70,6 +75,12 @@ func (m *Manager) Execute(ctx context.Context, providers []string, req cliproxye
 		if errExec == nil {
 			m.clearGrokSessionNoThink(req, opts)
 			return resp, nil
+		}
+		if skipCredentialRetry(ctx) {
+			if fallback, ok := responseFromNoThink(errExec); ok {
+				return fallback, nil
+			}
+			return cliproxyexecutor.Response{}, unwrapRequestStopError(errExec)
 		}
 		if isRequestTerminatedError(errExec) || isRequestStopError(errExec) {
 			return cliproxyexecutor.Response{}, unwrapRequestStopError(errExec)
@@ -100,7 +111,7 @@ func (m *Manager) Execute(ctx context.Context, providers []string, req cliproxye
 // It supports multiple providers for the same model and round-robins the starting provider per model.
 func (m *Manager) ExecuteCount(ctx context.Context, providers []string, req cliproxyexecutor.Request, opts cliproxyexecutor.Options) (cliproxyexecutor.Response, error) {
 	req, opts = cliproxysession.Enrich(req, opts)
-	ctx, finish := m.beginFillFirstHold(ctx)
+	ctx, finish := m.beginFillFirstHold(ctx, req, &opts)
 	defer finish()
 	normalized := m.normalizeProviders(providers)
 	if len(normalized) == 0 {
@@ -112,6 +123,9 @@ func (m *Manager) ExecuteCount(ctx context.Context, providers []string, req clip
 	}
 
 	defaultRequestRetry, maxRetryCredentials, maxWait := m.retrySettings()
+	if skipCredentialRetry(ctx) {
+		maxRetryCredentials = 1
+	}
 
 	var lastErr error
 	retryModel := authSelectionModelFromOptions(opts, req.Model)
@@ -119,6 +133,9 @@ func (m *Manager) ExecuteCount(ctx context.Context, providers []string, req clip
 		resp, errExec := m.executeCountMixedOnce(ctx, normalized, req, opts, maxRetryCredentials, attempt, defaultRequestRetry)
 		if errExec == nil {
 			return resp, nil
+		}
+		if skipCredentialRetry(ctx) {
+			return cliproxyexecutor.Response{}, unwrapRequestStopError(errExec)
 		}
 		if isRequestTerminatedError(errExec) || isRequestStopError(errExec) {
 			return cliproxyexecutor.Response{}, unwrapRequestStopError(errExec)
@@ -142,10 +159,13 @@ func (m *Manager) ExecuteCount(ctx context.Context, providers []string, req clip
 // It supports multiple providers for the same model and round-robins the starting provider per model.
 func (m *Manager) ExecuteStream(ctx context.Context, providers []string, req cliproxyexecutor.Request, opts cliproxyexecutor.Options) (*cliproxyexecutor.StreamResult, error) {
 	req, opts = cliproxysession.Enrich(req, opts)
-	if errMarked := m.errIfGrokSessionMarked(req, opts); errMarked != nil {
-		return nil, errMarked
+	ctx, finish := m.beginFillFirstHold(ctx, req, &opts)
+	if !skipCredentialRetry(ctx) {
+		if errMarked := m.errIfGrokSessionMarked(ctx, req, opts); errMarked != nil {
+			finish()
+			return nil, errMarked
+		}
 	}
-	ctx, finish := m.beginFillFirstHold(ctx)
 	if m.HomeEnabled() {
 		if unlockSession := m.lockHomeWebsocketSession(ctx, opts); unlockSession != nil {
 			defer unlockSession()
@@ -158,6 +178,9 @@ func (m *Manager) ExecuteStream(ctx context.Context, providers []string, req cli
 	}
 
 	defaultRequestRetry, maxRetryCredentials, maxWait := m.retrySettings()
+	if skipCredentialRetry(ctx) {
+		maxRetryCredentials = 1
+	}
 
 	var lastErr error
 	homeRetryLimit := -1
@@ -170,6 +193,13 @@ func (m *Manager) ExecuteStream(ctx context.Context, providers []string, req cli
 		if errStream == nil {
 			m.clearGrokSessionNoThink(req, opts)
 			return attachFillFirstStreamHold(result, finish), nil
+		}
+		if skipCredentialRetry(ctx) {
+			if fallback, ok := streamFromNoThink(errStream); ok {
+				return attachFillFirstStreamHold(fallback, finish), nil
+			}
+			finish()
+			return nil, unwrapRequestStopError(errStream)
 		}
 		if m.HomeEnabled() && retryRoundPending {
 			if wait, okWait := pendingHomeRetryRoundDelay(errStream, maxWait, &homeRetryLimit, pinnedAuthIDFromMetadata(opts.Metadata) == ""); okWait && m.homeRetryAllowed(attempt-1, homeRetryLimit) {
@@ -456,11 +486,20 @@ func (m *Manager) executeMixedOnce(ctx context.Context, providers []string, req 
 			}
 			if isXAIProvider(provider) {
 				if noThink, okNoThink := cliproxyexecutor.AsNoThinkStream(errExec); okNoThink {
+					if skipCredentialRetry(execCtx) {
+						if fallback, ok := responseFromNoThink(errExec); ok {
+							return fallback, nil
+						}
+						return resp, nil
+					}
 					m.disableAuthForNoThink(execCtx, auth, noThink)
 					result := Result{AuthID: auth.ID, Provider: provider, Model: resultModel, Success: false, Error: &Error{Code: "no_think_stream", Message: noThink.Error(), Retryable: true}, Options: execOpts}
 					m.MarkResult(execCtx, result)
-					if errMarked := m.handleGrokSessionNoThink(req, opts, &noThinkConsecutive, errExec); errMarked != nil {
-						return cliproxyexecutor.Response{}, errMarked
+					if m.handleGrokSessionNoThink(execCtx, req, opts, &noThinkConsecutive, errExec) {
+						if fallback, ok := responseFromNoThink(errExec); ok {
+							return fallback, nil
+						}
+						return resp, nil
 					}
 					authErr = errExec
 					continue
@@ -469,6 +508,9 @@ func (m *Manager) executeMixedOnce(ctx context.Context, providers []string, req 
 					result := Result{AuthID: auth.ID, Provider: provider, Model: resultModel, Success: false, Error: resultErrorFromError(errExec), Options: execOpts}
 					if m.disableXAIAuthIfQuotaExhausted(execCtx, auth, provider, errExec) {
 						m.MarkResult(execCtx, result)
+						if skipCredentialRetry(execCtx) {
+							return cliproxyexecutor.Response{}, errExec
+						}
 						authErr = errExec
 						continue
 					}
@@ -984,11 +1026,20 @@ func (m *Manager) executeStreamMixedOnce(ctx context.Context, providers []string
 			}
 			if isXAIProvider(provider) {
 				if noThink, okNoThink := cliproxyexecutor.AsNoThinkStream(errStream); okNoThink {
+					if skipCredentialRetry(execCtx) {
+						if fallback, ok := streamFromNoThink(errStream); ok {
+							return fallback, nil
+						}
+						return nil, errStream
+					}
 					m.disableAuthForNoThink(execCtx, auth, noThink)
 					result := Result{AuthID: auth.ID, Provider: provider, Model: routeModel, Success: false, Error: &Error{Code: "no_think_stream", Message: noThink.Error(), Retryable: true}, Options: execOpts}
 					m.MarkResult(execCtx, result)
-					if errMarked := m.handleGrokSessionNoThink(req, opts, &noThinkConsecutive, errStream); errMarked != nil {
-						return nil, errMarked
+					if m.handleGrokSessionNoThink(execCtx, req, opts, &noThinkConsecutive, errStream) {
+						if fallback, ok := streamFromNoThink(errStream); ok {
+							return fallback, nil
+						}
+						return nil, errStream
 					}
 					lastErr = errStream
 					if homeMode {
@@ -1002,11 +1053,17 @@ func (m *Manager) executeStreamMixedOnce(ctx context.Context, providers []string
 						result.RetryAfter = ra
 					}
 					m.MarkResult(execCtx, result)
+					if skipCredentialRetry(execCtx) {
+						return nil, errStream
+					}
 					lastErr = errStream
 					if homeMode {
 						homeAuthCount++
 					}
 					continue
+				}
+				if skipCredentialRetry(execCtx) {
+					return nil, errStream
 				}
 			}
 			action, okAction := matchRequestScopedErrorAction(auth, errStream, m.runtimeConfigSnapshot())

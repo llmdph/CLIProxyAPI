@@ -16,6 +16,7 @@ import (
 	internallogging "github.com/router-for-me/CLIProxyAPI/v7/internal/logging"
 	"github.com/router-for-me/CLIProxyAPI/v7/internal/thinking"
 	cliproxyauth "github.com/router-for-me/CLIProxyAPI/v7/sdk/cliproxy/auth"
+	cliproxyexecutor "github.com/router-for-me/CLIProxyAPI/v7/sdk/cliproxy/executor"
 	"github.com/router-for-me/CLIProxyAPI/v7/sdk/cliproxy/usage"
 	"github.com/tidwall/gjson"
 	"github.com/tidwall/sjson"
@@ -28,6 +29,8 @@ type UsageReporter struct {
 	alias           string
 	authID          string
 	authIndex       string
+	account         string
+	requestClass    string
 	authMu          sync.RWMutex
 	accessTokenHash string
 	authType        string
@@ -80,7 +83,9 @@ func NewUsageReporter(ctx context.Context, provider, model string, auth *cliprox
 		reporter.authID = auth.ID
 		reporter.authIndex = auth.EnsureIndex()
 		reporter.accessTokenHash = authAccessTokenSHA256(auth)
+		reporter.account = auth.DisplayAccount()
 	}
+	reporter.requestClass = cliproxyexecutor.RequestClassFromContext(ctx)
 	return reporter
 }
 
@@ -290,6 +295,8 @@ func (r *UsageReporter) buildRecordForModel(model string, detail usage.Detail, f
 		APIKey:              r.apiKey,
 		AuthID:              r.authID,
 		AuthIndex:           r.authIndex,
+		Account:             r.account,
+		RequestClass:        r.requestClass,
 		AccessTokenSHA256:   r.accessTokenFingerprint(),
 		AuthType:            r.authType,
 		ReasoningEffort:     r.reasoning,
