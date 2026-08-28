@@ -90,3 +90,43 @@ func TestXAIGateThinkStreamAuxWithThinkNotifies(t *testing.T) {
 	}
 }
 
+
+func TestXAIStreamEventIsAnswer(t *testing.T) {
+	if !xaiStreamEventIsAnswer([]byte(`{"type":"response.output_text.delta","delta":"hi"}`)) {
+		t.Fatal("output_text.delta should be answer")
+	}
+	if !xaiStreamEventIsAnswer([]byte(`{"type":"response.output_item.added","item":{"type":"message"}}`)) {
+		t.Fatal("message item should be answer")
+	}
+	if xaiStreamEventIsAnswer([]byte(`{"type":"response.reasoning_text.delta","delta":"think"}`)) {
+		t.Fatal("reasoning delta is not answer")
+	}
+	if xaiStreamEventIsAnswer([]byte(`{"type":"response.created"}`)) {
+		t.Fatal("created is not answer")
+	}
+}
+
+func TestIngestXAIThinkEventAccumulates(t *testing.T) {
+	var ev xaiThinkEvidence
+	ingestXAIThinkEvent(&ev, []byte(`{"type":"response.reasoning_text.delta","delta":"ab"}`))
+	ingestXAIThinkEvent(&ev, []byte(`{"type":"response.reasoning_text.delta","delta":"c"}`))
+	if !ev.ok() || ev.Length != 3 {
+		t.Fatalf("got has=%v len=%d", ev.HasThink, ev.Length)
+	}
+}
+
+func TestXAIStreamEventStatusErrQuota(t *testing.T) {
+	err, ok := xaiStreamEventStatusErr([]byte(`{"type":"error","status":429,"error":{"code":"subscription:free-usage-exhausted","message":"You've used all the included free usage for now."}}`))
+	if !ok || err == nil {
+		t.Fatal("want quota status error")
+	}
+	if _, isNoThink := cliproxyexecutor.AsNoThinkStream(err); isNoThink {
+		t.Fatalf("quota must not be no_think_stream: %v", err)
+	}
+	if !xaiStreamEventIsAnswer([]byte(`{"type":"response.output_text.delta","delta":"hi"}`)) {
+		t.Fatal("sanity")
+	}
+	if err2, ok2 := xaiStreamEventStatusErr([]byte(`{"type":"response.output_text.delta","delta":"hi"}`)); ok2 || err2 != nil {
+		t.Fatalf("answer is not status err: %v", err2)
+	}
+}

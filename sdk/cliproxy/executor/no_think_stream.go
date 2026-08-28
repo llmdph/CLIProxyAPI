@@ -6,9 +6,10 @@ import (
 	"net/http"
 )
 
-// NoThinkStreamError is returned by xAI executors only for HTTP 200 +
-// response.completed when a request that expected a Think stream got none
-// (or 有(0字)). Quota, incomplete, disconnects, and other upstream errors
+// NoThinkStreamError is returned by xAI executors when a request that
+// expected a Think stream got none (or 有(0字)). This includes HTTP 200
+// response.completed and fail-fast cases where visible answer tokens start
+// without Think. Quota, incomplete, disconnects, and other upstream errors
 // must not use this type. Auth managers should disable the credential,
 // retry with another account (up to a small cap), and after the cap return
 	// FallbackResponse / FallbackStreamChunks to the client. Conversations are

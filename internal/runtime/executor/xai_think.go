@@ -274,8 +274,59 @@ func bytesTrimSpace(b []byte) []byte {
 	return []byte(strings.TrimSpace(string(b)))
 }
 
-// xaiGateThinkStream returns a NoThinkStreamError when Think is required but
-// missing/zero. Prefer completed JSON evidence, then full SSE, then client payload.
+func ingestXAIThinkEvent(ev *xaiThinkEvidence, eventData []byte) {
+	if ev == nil {
+		return
+	}
+	eventData = bytesTrimSpace(eventData)
+	if len(eventData) == 0 || eventData[0] != '{' {
+		return
+	}
+	var root any
+	if err := json.Unmarshal(eventData, &root); err != nil {
+		return
+	}
+	walkXAIThinkJSON(root, ev)
+}
+
+// xaiStreamEventIsAnswer reports that the model started visible output
+// without needing response.completed. Used to fail-fast no-think retries.
+func xaiStreamEventIsAnswer(eventData []byte) bool {
+	eventType := gjson.GetBytes(eventData, "type").String()
+	switch eventType {
+	case "response.output_text.delta", "response.output_text.done":
+		return strings.TrimSpace(gjson.GetBytes(eventData, "delta").String()) != "" ||
+			strings.TrimSpace(gjson.GetBytes(eventData, "text").String()) != ""
+	case "response.content_part.added", "response.content_part.delta", "response.content_part.done":
+		partType := gjson.GetBytes(eventData, "part.type").String()
+		if partType == "reasoning_text" || partType == "summary_text" {
+			return false
+		}
+		if partType == "output_text" || partType == "text" {
+			return true
+		}
+	case "response.output_item.added", "response.output_item.done":
+		itemType := gjson.GetBytes(eventData, "item.type").String()
+		return itemType == "message"
+	}
+	return false
+}
+
+func xaiStreamEventStatusErr(eventData []byte) (error, bool) {
+	eventType := gjson.GetBytes(eventData, "type").String()
+	status := int(gjson.GetBytes(eventData, "status").Int())
+	if status == 0 {
+		status = int(gjson.GetBytes(eventData, "error.status").Int())
+	}
+	if eventType != "error" && status < 400 {
+		return nil, false
+	}
+	if status == 0 {
+		status = http.StatusInternalServerError
+	}
+	return xaiStatusErr(status, eventData), true
+}
+
 func xaiInspectThinkStream(rawSSE, completedJSON, fallbackPayload []byte) xaiThinkEvidence {
 	ev := parseXAIThinkEvidence(completedJSON)
 	if ev.bad() && len(rawSSE) > 0 {

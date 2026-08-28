@@ -5576,3 +5576,103 @@ func TestXAIPatchCompletedOutput_EnsuresUsageDetails(t *testing.T) {
 		t.Fatalf("expected cached_tokens == 0, got %d", gjson.GetBytes(got, "response.usage.input_tokens_details.cached_tokens").Int())
 	}
 }
+
+func TestXAIExecutorExecuteStreamSwitchesOnAnswerWithoutThink(t *testing.T) {
+	started := make(chan struct{})
+	block := make(chan struct{})
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.Header().Set("Content-Type", "text/event-stream")
+		flusher, _ := w.(http.Flusher)
+		_, _ = fmt.Fprint(w, "event: response.output_text.delta\ndata: {\"type\":\"response.output_text.delta\",\"delta\":\"hi\"}\n\n")
+		if flusher != nil {
+			flusher.Flush()
+		}
+		close(started)
+		<-block
+		_, _ = fmt.Fprint(w, "event: response.completed\ndata: {\"type\":\"response.completed\",\"response\":{\"id\":\"resp_1\",\"status\":\"completed\",\"output\":[]}}\n\n")
+	}))
+	defer server.Close()
+	defer close(block)
+
+	exec := NewXAIExecutor(&config.Config{})
+	auth := &cliproxyauth.Auth{
+		Provider:   "xai",
+		Attributes: map[string]string{"base_url": server.URL},
+		Metadata:   map[string]any{"access_token": "xai-token"},
+	}
+	done := make(chan error, 1)
+	go func() {
+		_, err := exec.ExecuteStream(context.Background(), auth, cliproxyexecutor.Request{
+			Model:   "grok-4.6",
+			Payload: []byte(`{"model":"grok-4.6","input":"hi","reasoning":{"effort":"xhigh"}}`),
+		}, cliproxyexecutor.Options{SourceFormat: sdktranslator.FormatOpenAIResponse, Stream: true})
+		done <- err
+	}()
+	select {
+	case <-started:
+	case <-time.After(2 * time.Second):
+		t.Fatal("upstream did not start")
+	}
+	select {
+	case err := <-done:
+		if err == nil {
+			t.Fatal("want no_think_stream before completed")
+		}
+		if _, ok := cliproxyexecutor.AsNoThinkStream(err); !ok {
+			t.Fatalf("err=%v, want no_think_stream", err)
+		}
+	case <-time.After(2 * time.Second):
+		t.Fatal("did not switch account before completed")
+	}
+}
+
+func TestXAIExecutorExecuteStreamReleasesAfterThinkDelta(t *testing.T) {
+	started := make(chan struct{})
+	block := make(chan struct{})
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.Header().Set("Content-Type", "text/event-stream")
+		flusher, _ := w.(http.Flusher)
+		_, _ = fmt.Fprint(w, "event: response.reasoning_text.delta\ndata: {\"type\":\"response.reasoning_text.delta\",\"delta\":\"hello\"}\n\n")
+		if flusher != nil {
+			flusher.Flush()
+		}
+		close(started)
+		<-block
+		_, _ = fmt.Fprint(w, "event: response.completed\ndata: {\"type\":\"response.completed\",\"response\":{\"id\":\"resp_1\",\"status\":\"completed\",\"output\":[],\"usage\":{\"input_tokens\":1,\"output_tokens\":1,\"total_tokens\":2}}}\n\n")
+	}))
+	defer server.Close()
+	defer close(block)
+
+	exec := NewXAIExecutor(&config.Config{})
+	auth := &cliproxyauth.Auth{
+		Provider:   "xai",
+		Attributes: map[string]string{"base_url": server.URL},
+		Metadata:   map[string]any{"access_token": "xai-token"},
+	}
+	done := make(chan struct{})
+	var result *cliproxyexecutor.StreamResult
+	var err error
+	go func() {
+		result, err = exec.ExecuteStream(context.Background(), auth, cliproxyexecutor.Request{
+			Model:   "grok-4.6",
+			Payload: []byte(`{"model":"grok-4.6","input":"hi","reasoning":{"effort":"xhigh"}}`),
+		}, cliproxyexecutor.Options{SourceFormat: sdktranslator.FormatOpenAIResponse, Stream: true})
+		close(done)
+	}()
+	select {
+	case <-started:
+	case <-time.After(2 * time.Second):
+		t.Fatal("upstream did not start")
+	}
+	select {
+	case <-done:
+	case <-time.After(2 * time.Second):
+		t.Fatal("ExecuteStream still blocked after think delta")
+	}
+	if err != nil {
+		t.Fatalf("ExecuteStream() error = %v", err)
+	}
+	if result == nil || result.Chunks == nil {
+		t.Fatal("missing stream")
+	}
+}
