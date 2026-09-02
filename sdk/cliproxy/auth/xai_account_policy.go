@@ -118,9 +118,6 @@ func (m *Manager) disableXAIAuthIfQuotaExhausted(ctx context.Context, auth *Auth
 	if m == nil || auth == nil || err == nil {
 		return false
 	}
-	if cliproxyexecutor.RequestClassUsesAuxPool(cliproxyexecutor.RequestClassFromContext(ctx)) {
-		return false
-	}
 	if !isXAIProvider(provider) || !isXAIQuotaExhaustedError(err) {
 		return false
 	}
@@ -244,6 +241,11 @@ func isXAIDownrankAuth(auth *Auth) bool {
 	return metadataTruthy(auth.Metadata, xaiDownrankPoolKey)
 }
 
+// IsXAIDownrankAuth reports whether the credential is in the xAI degraded pool.
+func IsXAIDownrankAuth(auth *Auth) bool {
+	return isXAIDownrankAuth(auth)
+}
+
 func markXAIDownrank(auth *Auth) {
 	if auth == nil {
 		return
@@ -266,6 +268,25 @@ func unmarkXAIDownrank(auth *Auth) {
 		return
 	}
 	delete(auth.Metadata, xaiDownrankPoolKey)
+}
+
+// ApplyXAIThinkProbeResult marks or restores the degraded pool from a think probe.
+func (m *Manager) ApplyXAIThinkProbeResult(ctx context.Context, auth *Auth, hasThink bool) string {
+	if m == nil || auth == nil {
+		return "unchanged"
+	}
+	if hasThink {
+		if m.restoreAuthFromDownrankPool(ctx, auth) {
+			return "restored"
+		}
+		return "unchanged"
+	}
+	already := isXAIDownrankAuth(auth)
+	m.moveAuthToDownrankPool(ctx, auth, &cliproxyexecutor.NoThinkStreamError{Detail: "think-probe"})
+	if already {
+		return "unchanged"
+	}
+	return "marked"
 }
 
 func (m *Manager) restoreAuthFromDownrankPoolByID(authID string) {

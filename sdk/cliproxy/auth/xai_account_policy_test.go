@@ -740,7 +740,7 @@ func TestPickRandomAvailableAuthDownrankWithoutMarkedFails(t *testing.T) {
 	}
 }
 
-func TestDisableXAIAuthIfQuotaExhaustedSkipsAuxPool(t *testing.T) {
+func TestDisableXAIAuthIfQuotaExhaustedAppliesToAuxPool(t *testing.T) {
 	t.Parallel()
 	m := NewManager(nil, nil, nil)
 	auth := &Auth{
@@ -753,20 +753,20 @@ func TestDisableXAIAuthIfQuotaExhaustedSkipsAuxPool(t *testing.T) {
 		t.Fatalf("register: %v", err)
 	}
 	quotaErr := errors.New(`{"code":"subscription:free-usage-exhausted","error":"You've used all the included free usage"}`)
-	ctx := cliproxyexecutor.WithRequestClass(context.Background(), cliproxyexecutor.RequestClassCompaction)
-	if m.disableXAIAuthIfQuotaExhausted(ctx, auth, "xai", quotaErr) {
-		t.Fatal("compaction must not trigger quota_exhausted disable")
+	ctx := cliproxyexecutor.WithRequestClass(context.Background(), cliproxyexecutor.RequestClassSessionName)
+	if !m.disableXAIAuthIfQuotaExhausted(ctx, auth, "xai", quotaErr) {
+		t.Fatal("session_name quota must disable the exhausted account")
 	}
 	updated, ok := m.GetByID(auth.ID)
 	if !ok || updated == nil {
 		t.Fatal("missing auth")
 	}
-	if updated.Disabled || updated.Status == StatusDisabled {
-		t.Fatalf("aux quota disabled auth: disabled=%v status=%s", updated.Disabled, updated.Status)
+	if !updated.Disabled || updated.Status != StatusDisabled {
+		t.Fatalf("aux quota did not disable auth: disabled=%v status=%s", updated.Disabled, updated.Status)
 	}
 }
 
-func TestExecuteStreamCompactionSkipsQuotaDisable(t *testing.T) {
+func TestExecuteStreamCompactionDisablesOnQuotaExhausted(t *testing.T) {
 	m := NewManager(nil, &FillFirstSelector{}, nil)
 	failID := "xai-compact-quota@outlook.com"
 	model := "grok-4.6"
@@ -793,11 +793,68 @@ func TestExecuteStreamCompactionSkipsQuotaDisable(t *testing.T) {
 	if !isXAIQuotaExhaustedError(err) {
 		t.Fatalf("ExecuteStream() error = %v, want quota exhausted", err)
 	}
-	kept, ok := m.GetByID(failID)
-	if !ok || kept == nil {
+	failed, ok := m.GetByID(failID)
+	if !ok || failed == nil {
 		t.Fatal("missing auth")
 	}
-	if kept.Disabled || kept.Status == StatusDisabled {
-		t.Fatalf("compaction quota disabled auth: disabled=%v status=%s message=%q", kept.Disabled, kept.Status, kept.StatusMessage)
+	if !failed.Disabled || failed.Status != StatusDisabled {
+		t.Fatalf("compaction quota did not disable auth: disabled=%v status=%s message=%q", failed.Disabled, failed.Status, failed.StatusMessage)
+	}
+}
+
+func TestExecuteStreamSessionNameRotatesOnQuotaExhausted(t *testing.T) {
+	m := NewManager(nil, &FillFirstSelector{}, nil)
+	failID := "xai-title-quota@outlook.com"
+	okID := "xai-title-ok@outlook.com"
+	model := "grok-4.6"
+	m.RegisterExecutor(quotaStreamFailExecutor{failID: failID})
+	reg := registry.GetGlobalRegistry()
+	reg.RegisterClient(failID, "xai", []*registry.ModelInfo{{ID: model}})
+	reg.RegisterClient(okID, "xai", []*registry.ModelInfo{{ID: model}})
+	t.Cleanup(func() {
+		reg.UnregisterClient(failID)
+		reg.UnregisterClient(okID)
+	})
+	failAuth := &Auth{
+		ID:       failID,
+		Provider: "xai",
+		Status:   StatusActive,
+		Metadata: map[string]any{"type": "xai", "email": failID, xaiDownrankPoolKey: true},
+	}
+	okAuth := &Auth{
+		ID:       okID,
+		Provider: "xai",
+		Status:   StatusActive,
+		Metadata: map[string]any{"type": "xai", "email": okID},
+	}
+	if _, err := m.Register(context.Background(), failAuth); err != nil {
+		t.Fatalf("register %s: %v", failID, err)
+	}
+	if _, err := m.Register(context.Background(), okAuth); err != nil {
+		t.Fatalf("register %s: %v", okID, err)
+	}
+	result, err := m.ExecuteStream(context.Background(), []string{"xai"}, cliproxyexecutor.Request{
+		Model:   model,
+		Payload: []byte(`{"instructions":"Generate a concise title for this conversation. Reply with the title only.","input":[{"type":"message","role":"user","content":"hello"}],"reasoning":{"effort":"low"}}`),
+	}, cliproxyexecutor.Options{Stream: true})
+	if err != nil {
+		t.Fatalf("ExecuteStream() error = %v, want failover success", err)
+	}
+	if result == nil {
+		t.Fatal("missing stream result")
+	}
+	failed, ok := m.GetByID(failID)
+	if !ok || failed == nil {
+		t.Fatal("missing exhausted auth")
+	}
+	if !failed.Disabled || failed.Status != StatusDisabled {
+		t.Fatalf("session_name quota did not disable auth: disabled=%v status=%s", failed.Disabled, failed.Status)
+	}
+	kept, ok := m.GetByID(okID)
+	if !ok || kept == nil {
+		t.Fatal("missing failover auth")
+	}
+	if kept.Disabled {
+		t.Fatal("failover auth was disabled")
 	}
 }

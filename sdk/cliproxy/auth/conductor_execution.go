@@ -64,9 +64,8 @@ func (m *Manager) Execute(ctx context.Context, providers []string, req cliproxye
 	}
 
 	defaultRequestRetry, maxRetryCredentials, maxWait := m.retrySettings()
-	if skipCredentialRetry(ctx) {
-		maxRetryCredentials = 1
-	}
+	// Aux/downrank requests still skip no-think rotation, but quota-exhausted
+	// accounts must be able to fail over to the next credential.
 
 	var lastErr error
 	retryModel := authSelectionModelFromOptions(opts, req.Model)
@@ -123,9 +122,8 @@ func (m *Manager) ExecuteCount(ctx context.Context, providers []string, req clip
 	}
 
 	defaultRequestRetry, maxRetryCredentials, maxWait := m.retrySettings()
-	if skipCredentialRetry(ctx) {
-		maxRetryCredentials = 1
-	}
+	// Aux/downrank requests still skip no-think rotation, but quota-exhausted
+	// accounts must be able to fail over to the next credential.
 
 	var lastErr error
 	retryModel := authSelectionModelFromOptions(opts, req.Model)
@@ -178,9 +176,8 @@ func (m *Manager) ExecuteStream(ctx context.Context, providers []string, req cli
 	}
 
 	defaultRequestRetry, maxRetryCredentials, maxWait := m.retrySettings()
-	if skipCredentialRetry(ctx) {
-		maxRetryCredentials = 1
-	}
+	// Aux/downrank requests still skip no-think rotation, but quota-exhausted
+	// accounts must be able to fail over to the next credential.
 
 	var lastErr error
 	homeRetryLimit := -1
@@ -508,9 +505,6 @@ func (m *Manager) executeMixedOnce(ctx context.Context, providers []string, req 
 					result := Result{AuthID: auth.ID, Provider: provider, Model: resultModel, Success: false, Error: resultErrorFromError(errExec), Options: execOpts}
 					if m.disableXAIAuthIfQuotaExhausted(execCtx, auth, provider, errExec) {
 						m.MarkResult(execCtx, result)
-						if skipCredentialRetry(execCtx) {
-							return cliproxyexecutor.Response{}, errExec
-						}
 						authErr = errExec
 						continue
 					}
@@ -1053,9 +1047,6 @@ func (m *Manager) executeStreamMixedOnce(ctx context.Context, providers []string
 						result.RetryAfter = ra
 					}
 					m.MarkResult(execCtx, result)
-					if skipCredentialRetry(execCtx) {
-						return nil, errStream
-					}
 					lastErr = errStream
 					if homeMode {
 						homeAuthCount++
