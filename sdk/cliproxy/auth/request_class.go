@@ -65,7 +65,11 @@ func isCompactionRequest(opts cliproxyexecutor.Options, bodies [][]byte) bool {
 		}
 		// Codex memento compact uses POST /v1/responses with a checkpoint
 		// prompt, not /responses/compact or type=compaction_trigger.
-		if looksLikeCompactionPrompt(lastUserText(body)) {
+		// Claude Code /compact is a /v1/messages summarizer turn.
+		if looksLikeCompactionPrompt(lastUserText(body)) ||
+			looksLikeCompactionPrompt(systemText(body)) ||
+			looksLikeCompactionPrompt(gjson.GetBytes(body, "instructions").String()) ||
+			looksLikeCompactionPrompt(latestNonToolText(body)) {
 			return true
 		}
 	}
@@ -138,6 +142,23 @@ func looksLikeCompactionPrompt(text string) bool {
 		"context checkpoint compaction",
 		"handoff summary for another llm",
 		"you are performing a context checkpoint compaction",
+		"detailed summary of the conversation so far",
+		"detailed summary of our conversation so far",
+		"summary of the conversation so far",
+		"summarize the conversation so far",
+		"summarize this conversation",
+		"compact the conversation",
+		"compact this conversation",
+		"asked you to compact",
+		"you are a conversation summarizer",
+		"tasked with summarizing conversations",
+		"the conversation has grown too long",
+		"the conversation is getting too long",
+		"paying close attention to the user's explicit requests and your previous actions",
+		"this summary should be thorough in capturing technical details",
+		"create a comprehensive summary of this conversation",
+		"compress this conversation",
+		"conversation compaction",
 	}
 	for _, needle := range needles {
 		if strings.Contains(lower, needle) {
@@ -171,6 +192,13 @@ func isSessionNameRequest(bodies [][]byte) bool {
 		}
 		if reasoningLooksUserFacing(body) {
 			continue
+		}
+		// Codex Desktop task-title helpers embed the original user prompt,
+		// so they are not small but are still title requests. Keep this after
+		// the user-facing-effort skip so a normal xhigh chat that mentions
+		// "generate a title" is not parked into the aux pool.
+		if looksLikeSessionName(lastUserText(body)) {
+			return true
 		}
 		if !requestLooksSmall(body) {
 			continue
@@ -384,6 +412,12 @@ func looksLikeSessionName(text string) bool {
 		"name this session",
 		"concise title",
 		"short title for",
+		"short title for a task",
+		"title for a task",
+		"title for this task",
+		"concise ui title",
+		"generate a concise ui title",
+		"structured title field",
 		"reply with the title",
 		"title only",
 		"3-6 word title",
@@ -429,6 +463,54 @@ func sessionNameText(body []byte) string {
 	write(systemText(body))
 	write(lastUserText(body))
 	return b.String()
+}
+
+func latestNonToolText(body []byte) string {
+	for _, path := range []string{"input", "messages"} {
+		node := gjson.GetBytes(body, path)
+		if !node.IsArray() {
+			continue
+		}
+		items := node.Array()
+		for i := len(items) - 1; i >= 0; i-- {
+			item := items[i]
+			typ := strings.ToLower(strings.TrimSpace(item.Get("type").String()))
+			role := strings.ToLower(strings.TrimSpace(item.Get("role").String()))
+			if role == "tool" || typ == "function_call" || typ == "function_call_output" || typ == "tool_result" || strings.HasPrefix(typ, "tool") {
+				continue
+			}
+			if typ == "compaction" || typ == "compaction_trigger" || typ == "compaction_summary" {
+				continue
+			}
+			text := messageItemText(item)
+			if strings.TrimSpace(text) == "" || strings.Contains(text, "<total_tokens>") {
+				continue
+			}
+			return text
+		}
+	}
+	return ""
+}
+
+func messageItemText(item gjson.Result) string {
+	content := item.Get("content")
+	if content.Type == gjson.String {
+		return content.String()
+	}
+	if content.IsArray() {
+		var b strings.Builder
+		for _, part := range content.Array() {
+			if part.Type == gjson.String {
+				b.WriteString(part.String())
+				b.WriteByte('\n')
+				continue
+			}
+			b.WriteString(part.Get("text").String())
+			b.WriteByte('\n')
+		}
+		return b.String()
+	}
+	return item.Get("text").String()
 }
 
 func lastUserText(body []byte) string {
