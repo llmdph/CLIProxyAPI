@@ -49,7 +49,7 @@ func (e *XAIExecutor) ExecuteStream(ctx context.Context, auth *cliproxyauth.Auth
 	helps.PrepareUpstreamForProxy(ctx, e.cfg, auth)
 	httpClient := helps.NewFreshXAIHTTPClient(ctx, e.cfg, auth, 0)
 	httpClient = reporter.TrackHTTPClient(httpClient)
-	httpResp, err := httpClient.Do(httpReq)
+	httpResp, err := e.doXAIChatHTTP(ctx, auth, httpReq, httpClient)
 	if err != nil {
 		helps.RecordAPIResponseError(ctx, e.cfg, err)
 		return nil, err
@@ -70,7 +70,8 @@ func (e *XAIExecutor) ExecuteStream(ctx context.Context, auth *cliproxyauth.Auth
 	}
 
 	expectThink := xaiRequestExpectsThink(prepared.body) &&
-		!cliproxyexecutor.RequestClassUsesAuxPool(cliproxyexecutor.RequestClassFromContext(ctx))
+		!cliproxyexecutor.RequestClassUsesAuxPool(cliproxyexecutor.RequestClassFromContext(ctx)) &&
+		!cliproxyauth.XAIUsingConsoleChannel(auth)
 	out := make(chan cliproxyexecutor.StreamChunk, 32)
 	ready := make(chan error, 1)
 	var readyOnce sync.Once

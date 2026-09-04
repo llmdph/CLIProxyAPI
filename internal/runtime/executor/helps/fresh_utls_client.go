@@ -25,6 +25,7 @@ import (
 var freshUtlsHosts = map[string]struct{}{
 	"api.x.ai":                {},
 	"cli-chat-proxy.grok.com": {},
+	"console.x.ai":             {},
 }
 
 var chromeHelloIDs = []tls.ClientHelloID{

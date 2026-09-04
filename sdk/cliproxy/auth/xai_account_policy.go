@@ -137,29 +137,85 @@ func (m *Manager) disableAuthForQuotaExhausted(ctx context.Context, auth *Auth, 
 		return
 	}
 	now := time.Now()
+	detail := xaiQuotaDetail(err)
+	usingConsole := XAIUsingConsoleChannel(clone)
+
+	if !usingConsole && XAIHasConsoleChannel(clone) {
+		setXAIChannel(clone, XAIChannelConsole)
+		setXAIBuildQuotaRetryAfter(clone, now.Add(xaiDisabledAutoReenableAfter))
+		clone.Disabled = false
+		clone.Status = StatusActive
+		clone.Unavailable = false
+		clone.NextRetryAfter = time.Time{}
+		clone.UpdatedAt = now
+		clone.StatusMessage = "build_quota_exhausted: using console"
+		syncXAIAutoDisableMetadata(clone)
+		if _, errUpdate := m.Update(ctx, clone); errUpdate != nil {
+			log.WithError(errUpdate).Warnf("xai: failed to switch auth %s to console after %s", auth.ID, detail)
+			return
+		}
+		log.Warnf("xai: switched auth %s to console after %s", auth.ID, detail)
+		return
+	}
+
+	if usingConsole {
+		markXAIConsoleQuotaExhausted(clone)
+		if xaiBuildWindowActive(clone, now) {
+			retryAt, _ := xaiBuildQuotaRetryAfter(clone)
+			m.applyXAIQuotaDisable(ctx, clone, detail+"; console exhausted until build window", retryAt)
+			return
+		}
+		setXAIChannel(clone, XAIChannelBuild)
+		clone.Disabled = false
+		clone.Status = StatusActive
+		clone.Unavailable = false
+		clone.NextRetryAfter = time.Time{}
+		clone.UpdatedAt = now
+		clone.StatusMessage = "console_quota_exhausted: using build"
+		syncXAIAutoDisableMetadata(clone)
+		if _, errUpdate := m.Update(ctx, clone); errUpdate != nil {
+			log.WithError(errUpdate).Warnf("xai: failed to return auth %s to build after console %s", auth.ID, detail)
+			return
+		}
+		log.Warnf("xai: console exhausted on auth %s, returning to build", auth.ID)
+		return
+	}
+
+	m.applyXAIQuotaDisable(ctx, clone, detail, now.Add(xaiDisabledAutoReenableAfter))
+}
+
+func xaiQuotaDetail(err error) string {
+	detail := "quota_exhausted"
+	if err == nil {
+		return detail
+	}
+	msg := strings.TrimSpace(err.Error())
+	if msg == "" {
+		return detail
+	}
+	if len(msg) > 240 {
+		msg = msg[:240] + "…"
+	}
+	return "quota_exhausted: " + msg
+}
+
+func (m *Manager) applyXAIQuotaDisable(ctx context.Context, clone *Auth, detail string, retryAfter time.Time) {
+	if m == nil || clone == nil {
+		return
+	}
+	now := time.Now()
 	clone.Disabled = true
 	clone.Status = StatusDisabled
 	clone.UpdatedAt = now
-	// Schedule automatic re-enable after the free-tier rolling window.
-	clone.NextRetryAfter = now.Add(xaiDisabledAutoReenableAfter)
-	detail := "quota_exhausted"
-	if err != nil {
-		msg := strings.TrimSpace(err.Error())
-		if msg != "" {
-			if len(msg) > 240 {
-				msg = msg[:240] + "…"
-			}
-			detail = "quota_exhausted: " + msg
-		}
-	}
+	clone.NextRetryAfter = retryAfter
 	clone.StatusMessage = detail
 	syncXAIAutoDisableMetadata(clone)
 	if _, errUpdate := m.Update(ctx, clone); errUpdate != nil {
-		log.WithError(errUpdate).Warnf("xai: failed to disable auth %s after %s", auth.ID, detail)
+		log.WithError(errUpdate).Warnf("xai: failed to disable auth %s after %s", clone.ID, detail)
 		return
 	}
-	m.dropFillFirstMember(auth.ID)
-	log.Warnf("xai: disabled auth %s after %s", auth.ID, detail)
+	m.dropFillFirstMember(clone.ID)
+	log.Warnf("xai: disabled auth %s after %s", clone.ID, detail)
 }
 
 func (m *Manager) disableAuthForNoThink(ctx context.Context, auth *Auth, noThink *cliproxyexecutor.NoThinkStreamError) {
@@ -671,12 +727,14 @@ func (m *Manager) reenableAuthAfterAutoDisable(ctx context.Context, auth *Auth, 
 	clone.Quota.NextRecoverAt = time.Time{}
 	clone.Quota.BackoffLevel = 0
 	clone.UpdatedAt = now
+	setXAIChannel(clone, XAIChannelBuild)
+	setXAIBuildQuotaRetryAfter(clone, time.Time{})
 	syncXAIAutoDisableMetadata(clone)
 	if _, errUpdate := m.Update(ctx, clone); errUpdate != nil {
 		log.WithError(errUpdate).Warnf("xai: failed to re-enable auth %s after auto-disable window", auth.ID)
 		return false
 	}
-	log.Infof("xai: re-enabled auth %s after %s auto-disable window", auth.ID, xaiDisabledAutoReenableAfter)
+	log.Infof("xai: re-enabled auth %s after %s auto-disable window (console exhausted=%v)", auth.ID, xaiDisabledAutoReenableAfter, XAIConsoleQuotaExhausted(clone))
 	return true
 }
 

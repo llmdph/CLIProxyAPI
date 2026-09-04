@@ -505,6 +505,10 @@ func (m *Manager) executeMixedOnce(ctx context.Context, providers []string, req 
 					result := Result{AuthID: auth.ID, Provider: provider, Model: resultModel, Success: false, Error: resultErrorFromError(errExec), Options: execOpts}
 					if m.disableXAIAuthIfQuotaExhausted(execCtx, auth, provider, errExec) {
 						m.MarkResult(execCtx, result)
+						if updated, ok := m.GetByID(auth.ID); ok && updated != nil && !updated.Disabled && updated.Status != StatusDisabled {
+							delete(tried, auth.ID)
+							delete(attempted, auth.ID)
+						}
 						authErr = errExec
 						continue
 					}
@@ -1047,6 +1051,10 @@ func (m *Manager) executeStreamMixedOnce(ctx context.Context, providers []string
 						result.RetryAfter = ra
 					}
 					m.MarkResult(execCtx, result)
+					if updated, ok := m.GetByID(auth.ID); ok && updated != nil && !updated.Disabled && updated.Status != StatusDisabled {
+						delete(tried, auth.ID)
+						delete(attempted, auth.ID)
+					}
 					lastErr = errStream
 					if homeMode {
 						homeAuthCount++

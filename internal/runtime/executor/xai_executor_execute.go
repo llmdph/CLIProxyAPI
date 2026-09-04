@@ -54,7 +54,7 @@ func (e *XAIExecutor) Execute(ctx context.Context, auth *cliproxyauth.Auth, req 
 	helps.PrepareUpstreamForProxy(ctx, e.cfg, auth)
 	httpClient := helps.NewFreshXAIHTTPClient(ctx, e.cfg, auth, 0)
 	httpClient = reporter.TrackHTTPClient(httpClient)
-	httpResp, err := httpClient.Do(httpReq)
+	httpResp, err := e.doXAIChatHTTP(ctx, auth, httpReq, httpClient)
 	if err != nil {
 		helps.RecordAPIResponseError(ctx, e.cfg, err)
 		return resp, err

@@ -228,6 +228,9 @@ func xaiUsingAPI(auth *cliproxyauth.Auth) bool {
 // cli-chat-proxy only accepts HTTP POST chat and does not implement
 // /responses/compact (404) or websocket upgrades (405).
 func xaiChatBaseURL(auth *cliproxyauth.Auth) string {
+	if cliproxyauth.XAIUsingConsoleChannel(auth) {
+		return strings.TrimRight(xaiConsoleBaseURL, "/") + "/v1"
+	}
 	_, baseURL := xaiCreds(auth)
 	if xaiUsingAPI(auth) {
 		if baseURL == "" {
