@@ -187,9 +187,6 @@ func (s *thinkStats) ingestJSON(raw []byte) {
 		}
 	case "response.output_item.done", "response.output_item.added":
 		if root.Get("item.type").String() == "reasoning" {
-			if strings.TrimSpace(root.Get("item.encrypted_content").String()) != "" {
-				s.hasThink.Store(true)
-			}
 			if !s.sawDelta.Load() {
 				for _, part := range root.Get("item.summary").Array() {
 					partType := part.Get("type").String()
@@ -202,9 +199,6 @@ func (s *thinkStats) ingestJSON(raw []byte) {
 					if partType == "reasoning_text" {
 						s.addText(part.Get("text").String())
 					}
-					if partType == "encrypted_content" || strings.TrimSpace(part.Get("encrypted_content").String()) != "" {
-						s.hasThink.Store(true)
-					}
 				}
 			}
 		}
@@ -216,9 +210,6 @@ func (s *thinkStats) ingestJSON(raw []byte) {
 			if item.Get("type").String() != "reasoning" {
 				continue
 			}
-			if strings.TrimSpace(item.Get("encrypted_content").String()) != "" {
-				s.hasThink.Store(true)
-			}
 			for _, part := range item.Get("summary").Array() {
 				partType := part.Get("type").String()
 				if partType == "summary_text" || partType == "reasoning_text" {
@@ -229,9 +220,6 @@ func (s *thinkStats) ingestJSON(raw []byte) {
 				partType := part.Get("type").String()
 				if partType == "reasoning_text" {
 					s.addText(part.Get("text").String())
-				}
-				if partType == "encrypted_content" || strings.TrimSpace(part.Get("encrypted_content").String()) != "" {
-					s.hasThink.Store(true)
 				}
 			}
 		}

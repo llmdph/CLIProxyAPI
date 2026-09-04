@@ -23,8 +23,15 @@ type xaiThinkEvidence struct {
 	Encrypted bool
 }
 
-func (e xaiThinkEvidence) ok() bool  { return e.Encrypted || (e.HasThink && e.Length > 0) }
+func (e xaiThinkEvidence) ok() bool  { return e.HasThink && e.Length > 0 }
 func (e xaiThinkEvidence) bad() bool { return !e.ok() }
+
+func xaiThinkOK(auth *cliproxyauth.Auth, ev xaiThinkEvidence) bool {
+	if ev.ok() {
+		return true
+	}
+	return ev.Encrypted && cliproxyauth.XAIUsingConsoleChannel(auth)
+}
 
 func (e xaiThinkEvidence) detail() string {
 	if e.Encrypted && e.Length == 0 {
@@ -378,7 +385,7 @@ func preferXAIThinkEvidence(current, next xaiThinkEvidence) xaiThinkEvidence {
 }
 
 func xaiNotifyThinkOK(ctx context.Context, auth *cliproxyauth.Auth, ev xaiThinkEvidence) {
-	if !ev.ok() {
+	if !xaiThinkOK(auth, ev) {
 		return
 	}
 	authID := ""
@@ -386,14 +393,17 @@ func xaiNotifyThinkOK(ctx context.Context, auth *cliproxyauth.Auth, ev xaiThinkE
 		authID = strings.TrimSpace(auth.ID)
 	}
 	cliproxyexecutor.NotifyXAIThinkOK(ctx, authID)
-	xaiRecordThinkEvidence(ctx, ev)
+	xaiRecordThinkEvidence(ctx, auth, ev)
 }
 
-func xaiRecordThinkEvidence(ctx context.Context, ev xaiThinkEvidence) {
-	if !ev.HasThink && !ev.Encrypted {
+func xaiRecordThinkEvidence(ctx context.Context, auth *cliproxyauth.Auth, ev xaiThinkEvidence) {
+	if ev.Length > 0 {
+		llmreqlog.RecordThinkEvidence(ctx, true, int64(ev.Length))
 		return
 	}
-	llmreqlog.RecordThinkEvidence(ctx, true, int64(ev.Length))
+	if ev.Encrypted && cliproxyauth.XAIUsingConsoleChannel(auth) {
+		llmreqlog.RecordThinkEvidence(ctx, true, 0)
+	}
 }
 
 func xaiGateThinkStream(
@@ -407,7 +417,7 @@ func xaiGateThinkStream(
 	streamChunks [][]byte,
 ) error {
 	ev := xaiInspectThinkStream(rawSSE, completedJSON, fallback.Payload)
-	if ev.ok() {
+	if xaiThinkOK(auth, ev) {
 		xaiNotifyThinkOK(ctx, auth, ev)
 		return nil
 	}

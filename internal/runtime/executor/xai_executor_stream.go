@@ -181,7 +181,7 @@ func (e *XAIExecutor) pumpXAIChatStream(
 			return nil
 		}
 		live = true
-		if think.ok() {
+		if xaiThinkOK(auth, think) {
 			xaiNotifyThinkOK(ctx, auth, think)
 		}
 		signalReady(nil)
@@ -232,11 +232,11 @@ func (e *XAIExecutor) pumpXAIChatStream(
 					return live, errEvt
 				}
 				ingestXAIThinkEvent(&think, eventData)
-				if think.ok() {
+				if xaiThinkOK(auth, think) {
 					if errLive := becomeLive(); errLive != nil {
 						return live, errLive
 					}
-					xaiRecordThinkEvidence(ctx, think)
+					xaiRecordThinkEvidence(ctx, auth, think)
 				} else if expectThink && !live && xaiStreamEventIsAnswer(eventData) {
 					if errThink := failNoThink(); errThink != nil {
 						return false, errThink
@@ -299,7 +299,7 @@ func (e *XAIExecutor) pumpXAIChatStream(
 	}
 
 	if live {
-		if think.ok() {
+		if xaiThinkOK(auth, think) {
 			xaiNotifyThinkOK(ctx, auth, think)
 		}
 		if len(completedData) == 0 && !sawIncomplete {

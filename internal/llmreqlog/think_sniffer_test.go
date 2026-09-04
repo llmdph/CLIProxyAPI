@@ -63,11 +63,8 @@ func TestThinkStatsEncryptedContent(t *testing.T) {
 	stats.ingest([]byte(`data: {"type":"response.output_item.done","item":{"type":"reasoning","encrypted_content":"opaque"}}` + "\n"))
 	stats.flush()
 	has, length := stats.snapshot()
-	if !has {
-		t.Fatal("encrypted reasoning should count as think")
-	}
-	if length != 0 {
-		t.Fatalf("encrypted blob must not count as think chars, got %d", length)
+	if has || length != 0 {
+		t.Fatalf("client stream encrypted blob must not count as think: has=%v len=%d", has, length)
 	}
 }
 

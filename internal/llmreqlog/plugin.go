@@ -79,6 +79,11 @@ func (p *usagePlugin) HandleUsage(ctx context.Context, record coreusage.Record) 
 			hasThinking = true
 		}
 	}
+	// Build: only plaintext think counts. Empty/0-char blobs stay 无.
+	// Console encrypted reasoning may have 0 visible chars and still count.
+	if thinkingLen <= 0 && !strings.EqualFold(strings.TrimSpace(record.Channel), "console") {
+		hasThinking = false
+	}
 
 	failed := record.Failed
 	statusCode := record.Fail.StatusCode

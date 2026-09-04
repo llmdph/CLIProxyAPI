@@ -91,7 +91,6 @@ func TestXAIGateThinkStreamAuxWithThinkNotifies(t *testing.T) {
 	}
 }
 
-
 func TestXAIStreamEventIsAnswer(t *testing.T) {
 	if !xaiStreamEventIsAnswer([]byte(`{"type":"response.output_text.delta","delta":"hi"}`)) {
 		t.Fatal("output_text.delta should be answer")
@@ -135,17 +134,31 @@ func TestXAIStreamEventStatusErrQuota(t *testing.T) {
 func TestParseXAIThinkEvidenceEncryptedContent(t *testing.T) {
 	body := []byte(`{"output":[{"type":"reasoning","summary":[],"encrypted_content":"abc123"}]}`)
 	ev := parseXAIThinkEvidence(body)
-	if !ev.ok() || !ev.Encrypted || !ev.HasThink {
-		t.Fatalf("encrypted reasoning should count as think, got has=%v enc=%v len=%d ok=%v", ev.HasThink, ev.Encrypted, ev.Length, ev.ok())
+	if !ev.Encrypted || ev.ok() {
+		t.Fatalf("encrypted blob is console-only think, got has=%v enc=%v len=%d ok=%v", ev.HasThink, ev.Encrypted, ev.Length, ev.ok())
 	}
 }
 
-func TestXAIGateThinkStreamAcceptsEncryptedContent(t *testing.T) {
-	auth := &cliproxyauth.Auth{ID: "auth-console"}
+func TestXAIGateThinkStreamAcceptsEncryptedContentOnConsole(t *testing.T) {
+	auth := &cliproxyauth.Auth{
+		ID:       "auth-console",
+		Provider: "xai",
+		Metadata: map[string]any{"sso": "token", "xai_channel": "console"},
+	}
 	upstream := []byte(`{"reasoning":{"effort":"high"}}`)
-	raw := []byte(`data: {"type":"response.output_item.done","item":{"type":"reasoning","encrypted_content":"opaque"}}` + "\n")
+	raw := []byte("data: {\"type\":\"response.output_item.done\",\"item\":{\"type\":\"reasoning\",\"encrypted_content\":\"opaque\"}}\n")
 	if err := xaiGateThinkStream(context.Background(), auth, upstream, raw, nil, cliproxyexecutor.Response{}, nil, nil); err != nil {
 		t.Fatalf("encrypted console think should pass: %v", err)
+	}
+}
+
+func TestXAIGateThinkStreamBuildEncryptedIsNoThink(t *testing.T) {
+	auth := &cliproxyauth.Auth{ID: "auth-build", Provider: "xai"}
+	upstream := []byte(`{"reasoning":{"effort":"high"}}`)
+	raw := []byte("data: {\"type\":\"response.output_item.done\",\"item\":{\"type\":\"reasoning\",\"encrypted_content\":\"opaque\"}}\n")
+	err := xaiGateThinkStream(context.Background(), auth, upstream, raw, nil, cliproxyexecutor.Response{}, nil, nil)
+	if err == nil {
+		t.Fatal("build encrypted-only stream must not count as think")
 	}
 }
 
