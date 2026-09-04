@@ -135,6 +135,7 @@
               <th>令牌</th>
               <th>账号</th>
               <th>分组</th>
+              <th>渠道</th>
               <th>请求</th>
               <th>类型</th>
               <th>模型</th>
@@ -158,6 +159,13 @@
     const summary = document.getElementById('summary');
     const hint = document.getElementById('hint');
     let timer = null;
+
+    function channelLabel(value) {
+      const v = String(value || '').toLowerCase();
+      if (v === 'console') return 'Console';
+      if (v === 'build') return 'Build';
+      return '-';
+    }
 
     function classLabel(value) {
       switch (String(value || '')) {
@@ -231,6 +239,7 @@
             <td>${esc(item.token)}</td>
             <td>${esc(item.account || '-')}</td>
             <td><span class="pill">${esc(item.group)}</span></td>
+            <td><span class="pill">${esc(channelLabel(item.channel))}</span></td>
             <td><span class="pill">${esc(classLabel(item.request_class))}</span></td>
             <td class="${statusClass}">${esc(item.type)}</td>
             <td>${esc(item.model)}</td>

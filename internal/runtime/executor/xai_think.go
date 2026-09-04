@@ -8,22 +8,28 @@ import (
 	"strings"
 	"unicode/utf8"
 
+	"github.com/router-for-me/CLIProxyAPI/v7/internal/llmreqlog"
 	cliproxyauth "github.com/router-for-me/CLIProxyAPI/v7/sdk/cliproxy/auth"
 	cliproxyexecutor "github.com/router-for-me/CLIProxyAPI/v7/sdk/cliproxy/executor"
 	"github.com/tidwall/gjson"
 )
 
 // xaiThinkEvidence mirrors the LLM request-log "Think流" column:
-// good = hasThink && length > 0; bad = missing stream or 有(0字).
+// good = hasThink && length > 0, or Console encrypted reasoning.
+// bad = missing stream or 有(0字).
 type xaiThinkEvidence struct {
-	HasThink bool
-	Length   int
+	HasThink  bool
+	Length    int
+	Encrypted bool
 }
 
-func (e xaiThinkEvidence) ok() bool  { return e.HasThink && e.Length > 0 }
+func (e xaiThinkEvidence) ok() bool  { return e.Encrypted || (e.HasThink && e.Length > 0) }
 func (e xaiThinkEvidence) bad() bool { return !e.ok() }
 
 func (e xaiThinkEvidence) detail() string {
+	if e.Encrypted && e.Length == 0 {
+		return "有Think流"
+	}
 	if !e.HasThink {
 		return "无Think流"
 	}
@@ -190,13 +196,22 @@ func ingestXAIReasoningItem(item map[string]any, ev *xaiThinkEvidence) {
 			if !ok {
 				continue
 			}
-			if xaiAsString(partObj["type"]) == "reasoning_text" {
+			partType := xaiAsString(partObj["type"])
+			if partType == "reasoning_text" {
 				if text := xaiAsString(partObj["text"]); text != "" {
 					addXAIThinkText(ev, text)
 					saw = true
 				}
 			}
+			if partType == "encrypted_content" || strings.TrimSpace(xaiAsString(partObj["encrypted_content"])) != "" {
+				markXAIEncryptedThink(ev)
+				saw = true
+			}
 		}
+	}
+	if blob := strings.TrimSpace(xaiAsString(item["encrypted_content"])); blob != "" {
+		markXAIEncryptedThink(ev)
+		saw = true
 	}
 	if !saw {
 		ev.HasThink = true
@@ -242,6 +257,14 @@ func addXAIThinkText(ev *xaiThinkEvidence, text string) {
 	}
 	ev.HasThink = true
 	ev.Length += utf8.RuneCountInString(text)
+}
+
+func markXAIEncryptedThink(ev *xaiThinkEvidence) {
+	if ev == nil {
+		return
+	}
+	ev.HasThink = true
+	ev.Encrypted = true
 }
 
 func xaiAsString(v any) string {
@@ -330,18 +353,28 @@ func xaiStreamEventStatusErr(eventData []byte) (error, bool) {
 func xaiInspectThinkStream(rawSSE, completedJSON, fallbackPayload []byte) xaiThinkEvidence {
 	ev := parseXAIThinkEvidence(completedJSON)
 	if ev.bad() && len(rawSSE) > 0 {
-		evSSE := parseXAIThinkFromSSE(rawSSE)
-		if evSSE.Length > ev.Length || (!ev.HasThink && evSSE.HasThink) {
-			ev = evSSE
-		}
+		ev = preferXAIThinkEvidence(ev, parseXAIThinkFromSSE(rawSSE))
 	}
 	if ev.bad() && len(fallbackPayload) > 0 {
-		evClient := parseXAIThinkEvidence(fallbackPayload)
-		if evClient.Length > ev.Length || (!ev.HasThink && evClient.HasThink) {
-			ev = evClient
-		}
+		ev = preferXAIThinkEvidence(ev, parseXAIThinkEvidence(fallbackPayload))
 	}
 	return ev
+}
+
+func preferXAIThinkEvidence(current, next xaiThinkEvidence) xaiThinkEvidence {
+	if next.ok() && !current.ok() {
+		return next
+	}
+	if next.Length > current.Length {
+		return next
+	}
+	if next.Encrypted && !current.Encrypted {
+		return next
+	}
+	if next.HasThink && !current.HasThink {
+		return next
+	}
+	return current
 }
 
 func xaiNotifyThinkOK(ctx context.Context, auth *cliproxyauth.Auth, ev xaiThinkEvidence) {
@@ -353,6 +386,14 @@ func xaiNotifyThinkOK(ctx context.Context, auth *cliproxyauth.Auth, ev xaiThinkE
 		authID = strings.TrimSpace(auth.ID)
 	}
 	cliproxyexecutor.NotifyXAIThinkOK(ctx, authID)
+	xaiRecordThinkEvidence(ctx, ev)
+}
+
+func xaiRecordThinkEvidence(ctx context.Context, ev xaiThinkEvidence) {
+	if !ev.HasThink && !ev.Encrypted {
+		return
+	}
+	llmreqlog.RecordThinkEvidence(ctx, true, int64(ev.Length))
 }
 
 func xaiGateThinkStream(

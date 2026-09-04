@@ -14,9 +14,10 @@ const (
 type fillFirstHoldKey struct{}
 
 type fillFirstHold struct {
-	id      string
-	pool    *fillFirstPool
-	noRetry bool
+	id       string
+	pool     *fillFirstPool
+	noRetry  bool
+	acquired bool
 }
 
 type fillFirstPool struct {

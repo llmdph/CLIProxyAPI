@@ -760,6 +760,11 @@ func (m *Manager) MarkResult(ctx context.Context, result Result) {
 				}
 				auth.UpdatedAt = now
 				syncXAIAutoDisableMetadata(auth)
+			} else if shouldSkipXAIChannelFailoverCooldown(auth) {
+				if result.Error != nil {
+					auth.LastError = cloneError(result.Error)
+				}
+				auth.UpdatedAt = now
 			} else if modelKey != "" {
 				if !shouldSkipCredentialCooldown(result.Error) {
 					disableCooling := m.cooldownDisabledForAuth(auth)

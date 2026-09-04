@@ -139,8 +139,6 @@ func (s *thinkStats) ingestJSON(raw []byte) {
 	if root.Get("content_block.type").String() == "thinking" {
 		if text := root.Get("content_block.thinking").String(); text != "" {
 			s.addText(text)
-		} else {
-			s.hasThink.Store(true)
 		}
 	}
 	if content := root.Get("content"); content.IsArray() {
@@ -149,8 +147,6 @@ func (s *thinkStats) ingestJSON(raw []byte) {
 			case "thinking":
 				if text := part.Get("thinking").String(); text != "" {
 					s.addText(text)
-				} else {
-					s.hasThink.Store(true)
 				}
 			}
 		}
@@ -189,17 +185,26 @@ func (s *thinkStats) ingestJSON(raw []byte) {
 				s.addText(text)
 			}
 		}
-	case "response.output_item.done":
-		if root.Get("item.type").String() == "reasoning" && !s.sawDelta.Load() {
-			for _, part := range root.Get("item.summary").Array() {
-				partType := part.Get("type").String()
-				if partType == "summary_text" || partType == "reasoning_text" {
-					s.addText(part.Get("text").String())
-				}
+	case "response.output_item.done", "response.output_item.added":
+		if root.Get("item.type").String() == "reasoning" {
+			if strings.TrimSpace(root.Get("item.encrypted_content").String()) != "" {
+				s.hasThink.Store(true)
 			}
-			for _, part := range root.Get("item.content").Array() {
-				if part.Get("type").String() == "reasoning_text" {
-					s.addText(part.Get("text").String())
+			if !s.sawDelta.Load() {
+				for _, part := range root.Get("item.summary").Array() {
+					partType := part.Get("type").String()
+					if partType == "summary_text" || partType == "reasoning_text" {
+						s.addText(part.Get("text").String())
+					}
+				}
+				for _, part := range root.Get("item.content").Array() {
+					partType := part.Get("type").String()
+					if partType == "reasoning_text" {
+						s.addText(part.Get("text").String())
+					}
+					if partType == "encrypted_content" || strings.TrimSpace(part.Get("encrypted_content").String()) != "" {
+						s.hasThink.Store(true)
+					}
 				}
 			}
 		}
@@ -211,6 +216,9 @@ func (s *thinkStats) ingestJSON(raw []byte) {
 			if item.Get("type").String() != "reasoning" {
 				continue
 			}
+			if strings.TrimSpace(item.Get("encrypted_content").String()) != "" {
+				s.hasThink.Store(true)
+			}
 			for _, part := range item.Get("summary").Array() {
 				partType := part.Get("type").String()
 				if partType == "summary_text" || partType == "reasoning_text" {
@@ -218,8 +226,12 @@ func (s *thinkStats) ingestJSON(raw []byte) {
 				}
 			}
 			for _, part := range item.Get("content").Array() {
-				if part.Get("type").String() == "reasoning_text" {
+				partType := part.Get("type").String()
+				if partType == "reasoning_text" {
 					s.addText(part.Get("text").String())
+				}
+				if partType == "encrypted_content" || strings.TrimSpace(part.Get("encrypted_content").String()) != "" {
+					s.hasThink.Store(true)
 				}
 			}
 		}
@@ -341,4 +353,27 @@ func thinkStatsFromContext(ctx context.Context) (has bool, length int64, ok bool
 	}
 	has, length = stats.snapshot()
 	return has, length, true
+}
+
+// RecordThinkEvidence merges upstream Think evidence into the request sniffer
+// so the log column can show Console encrypted reasoning that never appears as
+// plaintext client deltas.
+func RecordThinkEvidence(ctx context.Context, has bool, length int64) {
+	if !has || ctx == nil {
+		return
+	}
+	ginCtx, castOK := ctx.Value("gin").(*gin.Context)
+	if !castOK || ginCtx == nil {
+		return
+	}
+	raw, exists := ginCtx.Get(ginThinkStatsKey)
+	stats, _ := raw.(*thinkStats)
+	if !exists || stats == nil {
+		stats = &thinkStats{}
+		ginCtx.Set(ginThinkStatsKey, stats)
+	}
+	stats.hasThink.Store(true)
+	if length > stats.chars.Load() {
+		stats.chars.Store(length)
+	}
 }

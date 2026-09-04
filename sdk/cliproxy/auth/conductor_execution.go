@@ -699,6 +699,10 @@ func (m *Manager) executeCountMixedOnce(ctx context.Context, providers []string,
 					result.RetryAfter = ra
 				}
 				m.MarkResult(execCtx, result)
+				if updated, ok := m.GetByID(auth.ID); ok && updated != nil && !updated.Disabled && updated.Status != StatusDisabled {
+					delete(tried, auth.ID)
+					delete(attempted, auth.ID)
+				}
 				authErr = errExec
 				break
 			}

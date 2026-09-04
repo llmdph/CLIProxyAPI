@@ -295,6 +295,9 @@ func (h *Handler) listAuthFilesFromDisk(c *gin.Context) {
 				if requestRetry, okRetry := authFileRequestRetryFromJSON(data); okRetry {
 					fileData["request_retry"] = requestRetry
 				}
+				if authFileXAIDownrankFromJSON(data, typeValue) {
+					fileData["xai_downrank_pool"] = true
+				}
 			}
 
 			files = append(files, fileData)
@@ -434,6 +437,9 @@ func (h *Handler) buildAuthFileEntryLocked(auth *coreauth.Auth) gin.H {
 	if requestRetry, ok := auth.RequestRetryOverride(); ok {
 		entry["request_retry"] = requestRetry
 	}
+	if coreauth.IsXAIDownrankAuth(auth) {
+		entry["xai_downrank_pool"] = true
+	}
 	return entry
 }
 
@@ -443,6 +449,17 @@ func authFileRequestRetryFromJSON(data []byte) (int, bool) {
 		return 0, false
 	}
 	return (&coreauth.Auth{Metadata: metadata}).RequestRetryOverride()
+}
+
+func authFileXAIDownrankFromJSON(data []byte, provider string) bool {
+	raw := gjson.GetBytes(data, "xai_downrank_pool")
+	if !raw.Exists() {
+		return false
+	}
+	return coreauth.IsXAIDownrankAuth(&coreauth.Auth{
+		Provider: provider,
+		Metadata: map[string]any{"xai_downrank_pool": raw.Value()},
+	})
 }
 
 // quotaObservationPayload exposes only passive provider observations. Cooldown

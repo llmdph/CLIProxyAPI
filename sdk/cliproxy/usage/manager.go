@@ -30,6 +30,7 @@ type Record struct {
 	AuthIndex    string
 	Account      string
 	RequestClass string
+	Channel      string
 	// AccessTokenSHA256 identifies the OAuth token version without exposing the token.
 	AccessTokenSHA256 string
 	AuthType          string

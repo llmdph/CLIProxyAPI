@@ -60,6 +60,17 @@ func XAIUsingConsoleChannel(auth *Auth) bool {
 	return strings.EqualFold(metadataString(auth.Metadata, xaiChannelKey), XAIChannelConsole)
 }
 
+// XAIChannelOf returns the channel this auth will use for the next request.
+func XAIChannelOf(auth *Auth) string {
+	if auth == nil || !isXAIProvider(auth.Provider) {
+		return ""
+	}
+	if XAIUsingConsoleChannel(auth) {
+		return XAIChannelConsole
+	}
+	return XAIChannelBuild
+}
+
 func setXAIChannel(auth *Auth, channel string) {
 	if auth == nil {
 		return

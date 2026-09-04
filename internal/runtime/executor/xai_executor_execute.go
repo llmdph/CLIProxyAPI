@@ -37,6 +37,7 @@ func (e *XAIExecutor) Execute(ctx context.Context, auth *cliproxyauth.Auth, req 
 	if err != nil {
 		return resp, err
 	}
+	e.applyXAIConsoleRequestBody(auth, prepared)
 
 	reporter := helps.NewExecutorUsageReporter(ctx, e, prepared.baseModel, auth)
 	defer reporter.TrackFailure(ctx, &err)

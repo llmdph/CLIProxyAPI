@@ -82,7 +82,9 @@ func isXAIQuotaExhaustedError(err error) bool {
 	blob := strings.ToLower(err.Error())
 	if strings.Contains(blob, "free-usage-exhausted") ||
 		strings.Contains(blob, "included free usage") ||
-		strings.Contains(blob, "used all the included free usage") {
+		strings.Contains(blob, "used all the included free usage") ||
+		strings.Contains(blob, "free usage quota exceeded") ||
+		strings.Contains(blob, "purchase credits or provision an api key") {
 		return true
 	}
 	return strings.Contains(blob, "personal-team-blocked:spending-limit")
@@ -502,6 +504,17 @@ func shouldKeepXAIAutoDisableSchedule(auth *Auth) bool {
 		return true
 	}
 	return shouldPreserveXAIAutoDisableSchedule(auth)
+}
+
+func shouldSkipXAIChannelFailoverCooldown(auth *Auth) bool {
+	if auth == nil || !isXAIProvider(auth.Provider) {
+		return false
+	}
+	if auth.Disabled || auth.Status == StatusDisabled {
+		return false
+	}
+	msg := strings.ToLower(strings.TrimSpace(auth.StatusMessage))
+	return strings.Contains(msg, "using console") || strings.Contains(msg, "using build")
 }
 
 func metadataString(meta map[string]any, key string) string {

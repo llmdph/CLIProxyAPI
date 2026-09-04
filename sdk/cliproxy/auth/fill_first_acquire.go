@@ -188,14 +188,22 @@ func (m *Manager) acquireFillFirstAuth(
 		if err := ctx.Err(); err != nil {
 			return nil, nil, "", err
 		}
+		retrying := hold.acquired
+		prevID := hold.id
 		if hold.id != "" {
 			pool.release(hold.id)
 			hold.id = ""
 		}
 		m.pruneFillFirstMembers()
 
+		if retrying {
+			if auth, exec, provider := m.occupyFillFirstSticky(pool, prevID, providerSet, tried); auth != nil {
+				hold.occupy(auth.ID)
+				return auth, exec, provider, nil
+			}
+		}
 		if auth, exec, provider := m.occupyFillFirstMember(pool, model, providerSet, tried); auth != nil {
-			hold.id = auth.ID
+			hold.occupy(auth.ID)
 			return auth, exec, provider, nil
 		}
 
@@ -214,7 +222,10 @@ func (m *Manager) acquireFillFirstAuth(
 
 		canExpand := false
 		pool.mu.Lock()
-		canExpand = len(pool.members) < fillFirstPoolMax
+		memberCount := len(pool.members)
+		// New connections may grow the bucket. Same-request retries stay inside
+		// the current members unless the bucket is empty after a drop.
+		canExpand = memberCount < fillFirstPoolMax && (!retrying || memberCount == 0)
 		busy := len(pool.inFlight) > 0
 		queueFull := len(pool.waiters) >= fillFirstQueueMax
 		pool.mu.Unlock()
@@ -228,11 +239,11 @@ func (m *Manager) acquireFillFirstAuth(
 					continue
 				}
 				if downrank && !isXAIDownrankAuth(auth) {
-					hold.id = auth.ID
+					hold.occupy(auth.ID)
 					return auth, exec, provider, nil
 				}
 				if pool.addAndOccupy(auth.ID) {
-					hold.id = auth.ID
+					hold.occupy(auth.ID)
 					return auth, exec, provider, nil
 				}
 			}
@@ -240,7 +251,7 @@ func (m *Manager) acquireFillFirstAuth(
 				fallback, fallbackExec, fallbackProvider, errFallback := m.pickRandomAvailableAuth(model, providerSet, skip, false)
 				if errFallback == nil && fallback != nil {
 					if other == nil || !other.hasMember(fallback.ID) {
-						hold.id = fallback.ID
+						hold.occupy(fallback.ID)
 						return fallback, fallbackExec, fallbackProvider, nil
 					}
 				}
@@ -251,11 +262,14 @@ func (m *Manager) acquireFillFirstAuth(
 		}
 
 		if !busy {
+			if !canExpand {
+				return nil, nil, "", &Error{Code: "auth_not_found", Message: "no auth available"}
+			}
 			auth, exec, provider, errPick := m.pickRandomAvailableAuth(model, providerSet, tried, downrank)
 			if errPick != nil && downrank {
 				auth, exec, provider, errPick = m.pickRandomAvailableAuth(model, providerSet, tried, false)
 				if errPick == nil && auth != nil && (other == nil || !other.hasMember(auth.ID)) {
-					hold.id = auth.ID
+					hold.occupy(auth.ID)
 					return auth, exec, provider, nil
 				}
 			}
@@ -267,11 +281,11 @@ func (m *Manager) acquireFillFirstAuth(
 					return nil, nil, "", &Error{Code: "auth_not_found", Message: "no auth available"}
 				}
 				if downrank && !isXAIDownrankAuth(auth) {
-					hold.id = auth.ID
+					hold.occupy(auth.ID)
 					return auth, exec, provider, nil
 				}
 				if pool.addAndOccupy(auth.ID) {
-					hold.id = auth.ID
+					hold.occupy(auth.ID)
 					return auth, exec, provider, nil
 				}
 			}
@@ -370,6 +384,65 @@ func (m *Manager) occupyFillFirstMember(pool *fillFirstPool, model string, provi
 		return nil, nil, ""
 	}
 	return auth.Clone(), exec, provider
+}
+
+func (h *fillFirstHold) occupy(id string) {
+	if h == nil {
+		return
+	}
+	h.id = id
+	if id != "" {
+		h.acquired = true
+	}
+}
+
+func (m *Manager) occupyFillFirstSticky(pool *fillFirstPool, id string, providers map[string]struct{}, tried map[string]struct{}) (*Auth, ProviderExecutor, string) {
+	if m == nil || id == "" {
+		return nil, nil, ""
+	}
+	if pool == nil {
+		pool = m.fillFirst
+	}
+	if pool == nil {
+		return nil, nil, ""
+	}
+	if tried != nil {
+		if _, used := tried[id]; used {
+			return nil, nil, ""
+		}
+	}
+	m.mu.RLock()
+	auth := m.auths[id]
+	if auth == nil || auth.Disabled || auth.Status == StatusDisabled {
+		m.mu.RUnlock()
+		return nil, nil, ""
+	}
+	if pool == m.fillFirst && isXAIDownrankAuth(auth) {
+		m.mu.RUnlock()
+		return nil, nil, ""
+	}
+	if pool == m.fillFirstDownrank && !isXAIDownrankAuth(auth) {
+		m.mu.RUnlock()
+		return nil, nil, ""
+	}
+	if len(providers) > 0 {
+		if _, ok := providers[executorKeyFromAuth(auth)]; !ok {
+			m.mu.RUnlock()
+			return nil, nil, ""
+		}
+	}
+	clone := auth.Clone()
+	m.mu.RUnlock()
+	if pool.occupyIdle([]string{id}, tried) != id {
+		return nil, nil, ""
+	}
+	provider := executorKeyFromAuth(clone)
+	exec, ok := m.Executor(provider)
+	if !ok || exec == nil {
+		pool.release(id)
+		return nil, nil, ""
+	}
+	return clone, exec, provider
 }
 
 func attachFillFirstStreamHold(result *cliproxyexecutor.StreamResult, finish func()) *cliproxyexecutor.StreamResult {

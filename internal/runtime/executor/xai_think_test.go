@@ -6,6 +6,7 @@ import (
 
 	cliproxyauth "github.com/router-for-me/CLIProxyAPI/v7/sdk/cliproxy/auth"
 	cliproxyexecutor "github.com/router-for-me/CLIProxyAPI/v7/sdk/cliproxy/executor"
+	"github.com/tidwall/gjson"
 )
 
 func TestParseXAIThinkEvidenceZeroReasoning(t *testing.T) {
@@ -128,5 +129,48 @@ func TestXAIStreamEventStatusErrQuota(t *testing.T) {
 	}
 	if err2, ok2 := xaiStreamEventStatusErr([]byte(`{"type":"response.output_text.delta","delta":"hi"}`)); ok2 || err2 != nil {
 		t.Fatalf("answer is not status err: %v", err2)
+	}
+}
+
+func TestParseXAIThinkEvidenceEncryptedContent(t *testing.T) {
+	body := []byte(`{"output":[{"type":"reasoning","summary":[],"encrypted_content":"abc123"}]}`)
+	ev := parseXAIThinkEvidence(body)
+	if !ev.ok() || !ev.Encrypted || !ev.HasThink {
+		t.Fatalf("encrypted reasoning should count as think, got has=%v enc=%v len=%d ok=%v", ev.HasThink, ev.Encrypted, ev.Length, ev.ok())
+	}
+}
+
+func TestXAIGateThinkStreamAcceptsEncryptedContent(t *testing.T) {
+	auth := &cliproxyauth.Auth{ID: "auth-console"}
+	upstream := []byte(`{"reasoning":{"effort":"high"}}`)
+	raw := []byte(`data: {"type":"response.output_item.done","item":{"type":"reasoning","encrypted_content":"opaque"}}` + "\n")
+	if err := xaiGateThinkStream(context.Background(), auth, upstream, raw, nil, cliproxyexecutor.Response{}, nil, nil); err != nil {
+		t.Fatalf("encrypted console think should pass: %v", err)
+	}
+}
+
+func TestEnsureXAIConsoleReasoningInclude(t *testing.T) {
+	got := ensureXAIConsoleReasoningInclude([]byte(`{"model":"grok-4.6"}`))
+	if gjson.GetBytes(got, "include.0").String() != "reasoning.encrypted_content" {
+		t.Fatalf("include = %s", got)
+	}
+	got = ensureXAIConsoleReasoningInclude([]byte(`{"include":["reasoning.encrypted_content"]}`))
+	if len(gjson.GetBytes(got, "include").Array()) != 1 {
+		t.Fatalf("should not duplicate include: %s", got)
+	}
+}
+
+func TestEnsureXAIConsoleReasoningSummary(t *testing.T) {
+	got := ensureXAIConsoleReasoningSummary([]byte(`{"model":"grok-4.6","reasoning":{"effort":"xhigh"}}`))
+	if gjson.GetBytes(got, "reasoning.summary").String() != "auto" {
+		t.Fatalf("summary = %s", got)
+	}
+	got = ensureXAIConsoleReasoningSummary([]byte(`{"reasoning":{"effort":"high","summary":"detailed"}}`))
+	if gjson.GetBytes(got, "reasoning.summary").String() != "detailed" {
+		t.Fatalf("should keep client summary: %s", got)
+	}
+	got = ensureXAIConsoleReasoningSummary([]byte(`{"reasoning":{"effort":"none"}}`))
+	if gjson.GetBytes(got, "reasoning.summary").Exists() {
+		t.Fatalf("none should not add summary: %s", got)
 	}
 }

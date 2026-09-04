@@ -31,6 +31,7 @@ type UsageReporter struct {
 	authIndex       string
 	account         string
 	requestClass    string
+	channel         string
 	authMu          sync.RWMutex
 	accessTokenHash string
 	authType        string
@@ -84,6 +85,7 @@ func NewUsageReporter(ctx context.Context, provider, model string, auth *cliprox
 		reporter.authIndex = auth.EnsureIndex()
 		reporter.accessTokenHash = authAccessTokenSHA256(auth)
 		reporter.account = auth.DisplayAccount()
+		reporter.channel = cliproxyauth.XAIChannelOf(auth)
 	}
 	reporter.requestClass = cliproxyexecutor.RequestClassFromContext(ctx)
 	return reporter
@@ -297,6 +299,7 @@ func (r *UsageReporter) buildRecordForModel(model string, detail usage.Detail, f
 		AuthIndex:           r.authIndex,
 		Account:             r.account,
 		RequestClass:        r.requestClass,
+		Channel:             r.channel,
 		AccessTokenSHA256:   r.accessTokenFingerprint(),
 		AuthType:            r.authType,
 		ReasoningEffort:     r.reasoning,

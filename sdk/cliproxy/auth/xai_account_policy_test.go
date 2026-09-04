@@ -23,6 +23,8 @@ func TestIsXAIQuotaExhaustedError(t *testing.T) {
 		{name: "nil", err: nil, want: false},
 		{name: "free usage code", err: errors.New(`{"code":"subscription:free-usage-exhausted","error":"You've used all the included free usage"}`), want: true},
 		{name: "spending limit", err: errors.New(`{"code":"personal-team-blocked:spending-limit","error":"out of credits"}`), want: true},
+		{name: "console free quota", err: errors.New(`{"code":"resource-exhausted","error":"Free usage quota exceeded. Purchase credits or provision an API key at https://console.x.ai/"}`), want: true},
+		{name: "console rps", err: errors.New(`{"code":"resource-exhausted","error":"Too many requests for team x and model grok-4.6. Requests per Second (actual/limit): 2/2."}`), want: false},
 		{name: "bare 429", err: errors.New(`status 429: rate limit`), want: false},
 		{name: "network", err: errors.New(`dial tcp: i/o timeout`), want: false},
 	}
@@ -45,6 +47,12 @@ func TestShouldRotateXAICredential(t *testing.T) {
 	}
 	if !shouldRotateXAICredential(&cliproxyexecutor.NoThinkStreamError{Detail: "missing think"}) {
 		t.Fatal("no-think should rotate")
+	}
+	if !shouldRotateXAICredential(errors.New(`{"code":"resource-exhausted","error":"Free usage quota exceeded. Purchase credits or provision an API key at https://console.x.ai/"}`)) {
+		t.Fatal("console quota should rotate")
+	}
+	if shouldRotateXAICredential(errors.New(`{"code":"resource-exhausted","error":"Too many requests for team x. Requests per Second (actual/limit): 2/2."}`)) {
+		t.Fatal("console rps should not rotate")
 	}
 }
 

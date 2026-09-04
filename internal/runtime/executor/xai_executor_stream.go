@@ -32,6 +32,7 @@ func (e *XAIExecutor) ExecuteStream(ctx context.Context, auth *cliproxyauth.Auth
 	if err != nil {
 		return nil, err
 	}
+	e.applyXAIConsoleRequestBody(auth, prepared)
 
 	reporter := helps.NewExecutorUsageReporter(ctx, e, prepared.baseModel, auth)
 	defer reporter.TrackFailure(ctx, &err)
@@ -70,8 +71,7 @@ func (e *XAIExecutor) ExecuteStream(ctx context.Context, auth *cliproxyauth.Auth
 	}
 
 	expectThink := xaiRequestExpectsThink(prepared.body) &&
-		!cliproxyexecutor.RequestClassUsesAuxPool(cliproxyexecutor.RequestClassFromContext(ctx)) &&
-		!cliproxyauth.XAIUsingConsoleChannel(auth)
+		!cliproxyexecutor.RequestClassUsesAuxPool(cliproxyexecutor.RequestClassFromContext(ctx))
 	out := make(chan cliproxyexecutor.StreamChunk, 32)
 	ready := make(chan error, 1)
 	var readyOnce sync.Once
@@ -236,6 +236,7 @@ func (e *XAIExecutor) pumpXAIChatStream(
 					if errLive := becomeLive(); errLive != nil {
 						return live, errLive
 					}
+					xaiRecordThinkEvidence(ctx, think)
 				} else if expectThink && !live && xaiStreamEventIsAnswer(eventData) {
 					if errThink := failNoThink(); errThink != nil {
 						return false, errThink

@@ -57,3 +57,28 @@ func TestThinkStatsOpenAIReasoningContent(t *testing.T) {
 		t.Fatalf("think chars = %d, want %d", length, want)
 	}
 }
+
+func TestThinkStatsEncryptedContent(t *testing.T) {
+	stats := &thinkStats{}
+	stats.ingest([]byte(`data: {"type":"response.output_item.done","item":{"type":"reasoning","encrypted_content":"opaque"}}` + "\n"))
+	stats.flush()
+	has, length := stats.snapshot()
+	if !has {
+		t.Fatal("encrypted reasoning should count as think")
+	}
+	if length != 0 {
+		t.Fatalf("encrypted blob must not count as think chars, got %d", length)
+	}
+}
+
+func TestThinkStatsEmptyClaudeThinkingBlock(t *testing.T) {
+	stats := &thinkStats{}
+	stats.ingest([]byte(`data: {"type":"content_block_start","content_block":{"type":"thinking","thinking":""}}` + "\n"))
+	stats.ingest([]byte(`data: {"type":"content_block_stop"}` + "\n"))
+	stats.ingest([]byte(`{"content":[{"type":"thinking","thinking":""},{"type":"text","text":"Title"}]}`))
+	stats.flush()
+	has, length := stats.snapshot()
+	if has || length != 0 {
+		t.Fatalf("empty thinking block must not count as think: has=%v len=%d", has, length)
+	}
+}

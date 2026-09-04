@@ -17,6 +17,7 @@ type Entry struct {
 	Group            string    `json:"group"`
 	Type             string    `json:"type"`
 	RequestClass     string    `json:"request_class"`
+	Channel          string    `json:"channel"`
 	Model            string    `json:"model"`
 	LatencyMs        int64     `json:"latency_ms"`
 	TTFTMs           int64     `json:"ttft_ms"`

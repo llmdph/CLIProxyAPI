@@ -19,6 +19,8 @@ import (
 	"github.com/google/uuid"
 	"github.com/router-for-me/CLIProxyAPI/v7/internal/runtime/executor/helps"
 	cliproxyauth "github.com/router-for-me/CLIProxyAPI/v7/sdk/cliproxy/auth"
+	"github.com/tidwall/gjson"
+	"github.com/tidwall/sjson"
 )
 
 const (
@@ -49,6 +51,51 @@ var xaiConsoleDPoPCache sync.Map // key -> *xaiConsoleDPoPSession
 func xaiConsoleEndpoint(path string) string {
 	path = "/" + strings.TrimLeft(strings.TrimSpace(path), "/")
 	return strings.TrimRight(xaiConsoleBaseURL, "/") + "/v1" + path
+}
+
+func (e *XAIExecutor) applyXAIConsoleRequestBody(auth *cliproxyauth.Auth, prepared *xaiPreparedRequest) {
+	if prepared == nil || !cliproxyauth.XAIUsingConsoleChannel(auth) {
+		return
+	}
+	prepared.body = ensureXAIConsoleReasoningInclude(prepared.body)
+	prepared.body = ensureXAIConsoleReasoningSummary(prepared.body)
+}
+
+func ensureXAIConsoleReasoningInclude(body []byte) []byte {
+	const includeValue = "reasoning.encrypted_content"
+	include := gjson.GetBytes(body, "include")
+	if include.Exists() && include.IsArray() {
+		for _, item := range include.Array() {
+			if item.String() == includeValue {
+				return body
+			}
+		}
+		updated, err := sjson.SetBytes(body, "include.-1", includeValue)
+		if err != nil {
+			return body
+		}
+		return updated
+	}
+	updated, err := sjson.SetBytes(body, "include.0", includeValue)
+	if err != nil {
+		return body
+	}
+	return updated
+}
+
+func ensureXAIConsoleReasoningSummary(body []byte) []byte {
+	effort := strings.ToLower(strings.TrimSpace(gjson.GetBytes(body, "reasoning.effort").String()))
+	if effort == "none" {
+		return body
+	}
+	if strings.TrimSpace(gjson.GetBytes(body, "reasoning.summary").String()) != "" {
+		return body
+	}
+	updated, err := sjson.SetBytes(body, "reasoning.summary", "auto")
+	if err != nil {
+		return body
+	}
+	return updated
 }
 
 func xaiConsoleCacheKey(auth *cliproxyauth.Auth) string {
