@@ -193,3 +193,10 @@ func (t *grokSessionNoThinkTracker) purgeExpiredLocked(now time.Time) {
 		}
 	}
 }
+
+func sessionHeaderValue(headers http.Header, name string) string {
+	if headers == nil {
+		return ""
+	}
+	return strings.TrimSpace(headers.Get(name))
+}
