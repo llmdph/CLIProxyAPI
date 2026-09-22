@@ -50,10 +50,10 @@ func TestXAIIdentityForAuthStickyDeviceFingerprint(t *testing.T) {
 		t.Fatalf("device fingerprint changed for same auth: %+v vs %+v", first, second)
 	}
 	if first.RequestID == second.RequestID {
-		t.Fatalf("request id should still rotate: %q", first.RequestID)
+		t.Fatalf("request id should rotate per HTTP call: %q", first.RequestID)
 	}
 	if first.TraceParent == second.TraceParent {
-		t.Fatalf("traceparent should still rotate: %q", first.TraceParent)
+		t.Fatalf("traceparent should rotate per HTTP call: %q", first.TraceParent)
 	}
 
 	other := xaiIdentityForAuth("auth-other-device")
@@ -98,12 +98,14 @@ func TestApplyXAIChatHeadersStickyDeviceFingerprintPerAuth(t *testing.T) {
 		t.Fatalf("missing secondary headers: trace=%q lang=%q", req1.Header.Get("traceparent"), req1.Header.Get("Accept-Language"))
 	}
 	if req1.Header.Get("traceparent") == req2.Header.Get("traceparent") {
-		t.Fatalf("traceparent should rotate per request")
+		t.Fatalf("traceparent should rotate per HTTP call")
 	}
 	if req1.Header.Get("x-grok-req-id") == req2.Header.Get("x-grok-req-id") {
-		t.Fatalf("req-id should rotate per request")
+		t.Fatalf("req-id should rotate per HTTP call")
 	}
-
+	if req1.Header.Get("Connection") == "close" || req2.Header.Get("Connection") == "close" {
+		t.Fatalf("same account must not force Connection: close")
+	}
 	auth2 := &cliproxyauth.Auth{
 		ID: "auth-fp-2",
 		Attributes: map[string]string{
@@ -117,5 +119,11 @@ func TestApplyXAIChatHeadersStickyDeviceFingerprintPerAuth(t *testing.T) {
 	applyXAIChatHeaders(req3, auth2, "tok", true, "sess-stable")
 	if req3.Header.Get("x-grok-agent-id") == req1.Header.Get("x-grok-agent-id") {
 		t.Fatalf("next account should mint a new agent id")
+	}
+	if req3.Header.Get("x-grok-req-id") == req1.Header.Get("x-grok-req-id") {
+		t.Fatalf("next account should mint a new req-id")
+	}
+	if req3.Header.Get("traceparent") == req1.Header.Get("traceparent") {
+		t.Fatalf("next account should mint a new traceparent")
 	}
 }

@@ -300,6 +300,9 @@ xai:
   # When true, inject the native x_search tool when the request does not declare it.
   # The injected tool is also added to tool_choice.allowed_tools when applicable.
   inject-x-search: false
+  # When false, never switch to or use Console. Build quota exhaustion rotates to
+  # the next Build account instead. Omitted defaults to true.
+  enable-console: true
 
 # When true, enable authentication for the WebSocket API (/v1/ws).
 ws-auth: true

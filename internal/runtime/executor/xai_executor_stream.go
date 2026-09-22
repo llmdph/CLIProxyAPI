@@ -238,8 +238,10 @@ func (e *XAIExecutor) pumpXAIChatStream(
 					}
 					xaiRecordThinkEvidence(ctx, auth, think)
 				} else if expectThink && !live && xaiStreamEventIsAnswer(eventData) {
-					if errThink := failNoThink(); errThink != nil {
-						return false, errThink
+					if !cliproxyauth.XAIUsingConsoleChannel(auth) {
+						if errThink := failNoThink(); errThink != nil {
+							return false, errThink
+						}
 					}
 				}
 				normalizedEventName := gjson.GetBytes(eventData, "type").String()

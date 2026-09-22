@@ -2,8 +2,25 @@ package auth
 
 import (
 	"strings"
+	"sync/atomic"
 	"time"
 )
+
+var xaiConsoleFeatureEnabled atomic.Bool
+
+func init() {
+	xaiConsoleFeatureEnabled.Store(true)
+}
+
+// SetXAIConsoleEnabled toggles Console for the whole process. Default is on.
+func SetXAIConsoleEnabled(enabled bool) {
+	xaiConsoleFeatureEnabled.Store(enabled)
+}
+
+// XAIConsoleFeatureEnabled reports the process-wide Console switch.
+func XAIConsoleFeatureEnabled() bool {
+	return xaiConsoleFeatureEnabled.Load()
+}
 
 const (
 	XAIChannelBuild   = "build"
@@ -31,6 +48,9 @@ func XAIConsoleSSO(auth *Auth) string {
 
 // XAIHasConsoleChannel reports whether Console can still be used on this account.
 func XAIHasConsoleChannel(auth *Auth) bool {
+	if !xaiConsoleFeatureEnabled.Load() {
+		return false
+	}
 	if auth == nil || !isXAIProvider(auth.Provider) {
 		return false
 	}

@@ -250,6 +250,7 @@ func (m *Manager) moveAuthToDownrankPool(ctx context.Context, auth *Auth, noThin
 	if m.fillFirst != nil {
 		m.fillFirst.drop(auth.ID)
 	}
+	m.unbindAccountProxy(auth.ID, "no_think")
 	if m.fillFirstDownrank != nil {
 		_ = m.fillFirstDownrank.addIdle(auth.ID)
 	}
@@ -793,6 +794,8 @@ func (m *Manager) runXAIDisabledReenableLoop(ctx context.Context) {
 	defer ticker.Stop()
 	m.promoteNoThinkDisabledAuthsToDownrank(ctx)
 	m.reenableExpiredXAIDisabledAuths(ctx, time.Now())
+	m.pruneFillFirstMembers()
+	m.releaseOrphanAccountProxies()
 	for {
 		select {
 		case <-ctx.Done():
@@ -800,6 +803,8 @@ func (m *Manager) runXAIDisabledReenableLoop(ctx context.Context) {
 		case now := <-ticker.C:
 			m.promoteNoThinkDisabledAuthsToDownrank(ctx)
 			m.reenableExpiredXAIDisabledAuths(ctx, now)
+			m.pruneFillFirstMembers()
+			m.releaseOrphanAccountProxies()
 		}
 	}
 }

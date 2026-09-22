@@ -181,6 +181,7 @@ func (e *XAIExecutor) executeCompactRequest(ctx context.Context, auth *cliproxya
 	reporter.SetTranslatedReasoningEffort(prepared.body, e.Identifier())
 
 	requestURL := strings.TrimSuffix(baseURL, "/") + "/responses/compact"
+	ctx = helps.WithWarpDialRecorder(ctx)
 	httpReq, err := http.NewRequestWithContext(ctx, http.MethodPost, requestURL, bytes.NewReader(prepared.body))
 	if err != nil {
 		return nil, nil, nil, err

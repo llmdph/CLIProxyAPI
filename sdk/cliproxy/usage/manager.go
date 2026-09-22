@@ -31,6 +31,7 @@ type Record struct {
 	Account      string
 	RequestClass string
 	Channel      string
+	ProxyURL     string
 	// AccessTokenSHA256 identifies the OAuth token version without exposing the token.
 	AccessTokenSHA256 string
 	AuthType          string

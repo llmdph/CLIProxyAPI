@@ -215,7 +215,7 @@ func TestBeginFillFirstHoldRoutesAuxToDownrank(t *testing.T) {
 			t.Parallel()
 			m := NewManager(nil, &FillFirstSelector{}, nil)
 			opts := tt.opts
-			ctx, finish := m.beginFillFirstHold(context.Background(), tt.req, &opts)
+			ctx, finish := m.beginFillFirstHold(context.Background(), nil, tt.req, &opts)
 			t.Cleanup(finish)
 			if got := cliproxyexecutor.RequestClassFromContext(ctx); got != tt.want {
 				t.Fatalf("ctx class = %q, want %q", got, tt.want)
@@ -244,7 +244,7 @@ func TestBeginFillFirstHoldKeepsNormalOnMainPool(t *testing.T) {
 	t.Parallel()
 	m := NewManager(nil, &FillFirstSelector{}, nil)
 	opts := cliproxyexecutor.Options{}
-	ctx, finish := m.beginFillFirstHold(context.Background(), cliproxyexecutor.Request{Payload: []byte(`{"input":"hello"}`)}, &opts)
+	ctx, finish := m.beginFillFirstHold(context.Background(), nil, cliproxyexecutor.Request{Payload: []byte(`{"input":"hello"}`)}, &opts)
 	t.Cleanup(finish)
 	if got := cliproxyexecutor.RequestClassFromContext(ctx); got != cliproxyexecutor.RequestClassNormal {
 		t.Fatalf("class = %q", got)

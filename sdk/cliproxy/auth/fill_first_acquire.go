@@ -4,11 +4,48 @@ import (
 	"context"
 	"math/rand/v2"
 	"strings"
+	"sync"
 	"time"
 
 	cliproxyexecutor "github.com/router-for-me/CLIProxyAPI/v7/sdk/cliproxy/executor"
 	log "github.com/sirupsen/logrus"
 )
+
+func providersIncludeXAI(providers []string) bool {
+	if len(providers) == 0 {
+		return true
+	}
+	for _, provider := range providers {
+		if isXAIProvider(provider) {
+			return true
+		}
+	}
+	return false
+}
+
+func isNonXAIFillFirstModel(model string) bool {
+	name := strings.ToLower(strings.TrimSpace(model))
+	if name == "" {
+		return false
+	}
+	if strings.HasPrefix(name, "grok") {
+		return false
+	}
+	if strings.HasPrefix(name, "gemini") || strings.Contains(name, "antigravity") {
+		return true
+	}
+	if strings.HasPrefix(name, "claude") || strings.HasPrefix(name, "gpt-oss") {
+		return true
+	}
+	return false
+}
+
+func fillFirstAppliesToRequest(providers []string, req cliproxyexecutor.Request) bool {
+	if !providersIncludeXAI(providers) {
+		return false
+	}
+	return !isNonXAIFillFirstModel(req.Model)
+}
 
 func (m *Manager) fillFirstEnabled() bool {
 	if m == nil {
@@ -21,7 +58,7 @@ func (m *Manager) fillFirstEnabled() bool {
 	return ok
 }
 
-func (m *Manager) beginFillFirstHold(ctx context.Context, req cliproxyexecutor.Request, opts *cliproxyexecutor.Options) (context.Context, func()) {
+func (m *Manager) beginFillFirstHold(ctx context.Context, providers []string, req cliproxyexecutor.Request, opts *cliproxyexecutor.Options) (context.Context, func()) {
 	if ctx == nil {
 		ctx = context.Background()
 	}
@@ -46,7 +83,7 @@ func (m *Manager) beginFillFirstHold(ctx context.Context, req cliproxyexecutor.R
 		}
 		log.Infof("llm request class=%s pool=%s", class, poolName)
 	}
-	if m == nil || !m.fillFirstEnabled() {
+	if m == nil || !m.fillFirstEnabled() || !fillFirstAppliesToRequest(providers, req) {
 		return ctx, func() {}
 	}
 	if hold, _ := ctx.Value(fillFirstHoldKey{}).(*fillFirstHold); hold != nil {
@@ -62,17 +99,20 @@ func (m *Manager) beginFillFirstHold(ctx context.Context, req cliproxyexecutor.R
 	}
 	hold := &fillFirstHold{pool: pool, noRetry: noRetry}
 	ctx = context.WithValue(ctx, fillFirstHoldKey{}, hold)
+	var finishOnce sync.Once
 	return ctx, func() {
-		if hold.id != "" {
-			holdPool := hold.pool
-			if holdPool == nil {
-				holdPool = m.fillFirst
+		finishOnce.Do(func() {
+			if hold.id != "" {
+				holdPool := hold.pool
+				if holdPool == nil {
+					holdPool = m.fillFirst
+				}
+				if holdPool != nil {
+					holdPool.release(hold.id)
+				}
+				hold.id = ""
 			}
-			if holdPool != nil {
-				holdPool.release(hold.id)
-			}
-			hold.id = ""
-		}
+		})
 	}
 }
 
@@ -153,6 +193,7 @@ func (m *Manager) dropFillFirstMember(id string) {
 	if m.fillFirstDownrank != nil {
 		m.fillFirstDownrank.drop(id)
 	}
+	m.unbindAccountProxy(id, "leave_bucket")
 }
 
 func (m *Manager) acquireFillFirstAuth(
@@ -164,6 +205,16 @@ func (m *Manager) acquireFillFirstAuth(
 ) (*Auth, ProviderExecutor, string, error) {
 	if m == nil || hold == nil {
 		return m.pickRandomAvailableAuth(model, nil, tried, false)
+	}
+	if !providersIncludeXAI(providers) {
+		providerSet := make(map[string]struct{}, len(providers))
+		for _, provider := range providers {
+			key := strings.TrimSpace(strings.ToLower(provider))
+			if key != "" {
+				providerSet[key] = struct{}{}
+			}
+		}
+		return m.pickRandomAvailableAuth(model, providerSet, tried, false)
 	}
 	pool := hold.poolOr(m)
 	if pool == nil {
@@ -183,6 +234,7 @@ func (m *Manager) acquireFillFirstAuth(
 		tried = make(map[string]struct{})
 	}
 	other := m.otherFillFirstPool(pool)
+	lostID := ""
 
 	for {
 		if err := ctx.Err(); err != nil {
@@ -190,21 +242,22 @@ func (m *Manager) acquireFillFirstAuth(
 		}
 		retrying := hold.acquired
 		prevID := hold.id
-		if hold.id != "" {
-			pool.release(hold.id)
+		if prevID != "" {
+			lostID = prevID
+			pool.release(prevID)
 			hold.id = ""
 		}
 		m.pruneFillFirstMembers()
 
-		if retrying {
+		if retrying && prevID != "" {
 			if auth, exec, provider := m.occupyFillFirstSticky(pool, prevID, providerSet, tried); auth != nil {
 				hold.occupy(auth.ID)
-				return auth, exec, provider, nil
+				return m.applyBoundProxy(auth), exec, provider, nil
 			}
 		}
 		if auth, exec, provider := m.occupyFillFirstMember(pool, model, providerSet, tried); auth != nil {
 			hold.occupy(auth.ID)
-			return auth, exec, provider, nil
+			return m.applyBoundProxy(auth), exec, provider, nil
 		}
 
 		skip := make(map[string]struct{}, len(tried)+len(pool.memberIDs())+8)
@@ -220,15 +273,16 @@ func (m *Manager) acquireFillFirstAuth(
 			}
 		}
 
-		canExpand := false
-		pool.mu.Lock()
-		memberCount := len(pool.members)
+		memberCount, inFlightCount, waiterCount, gen := pool.snapshot()
+		prevGone := retrying && lostID != "" && !pool.hasMember(lostID)
+		if prevGone {
+			tried[lostID] = struct{}{}
+		}
 		// New connections may grow the bucket. Same-request retries stay inside
-		// the current members unless the bucket is empty after a drop.
-		canExpand = memberCount < fillFirstPoolMax && (!retrying || memberCount == 0)
-		busy := len(pool.inFlight) > 0
-		queueFull := len(pool.waiters) >= fillFirstQueueMax
-		pool.mu.Unlock()
+		// current members, except when this request's account left after quota/disable.
+		canExpand := memberCount < fillFirstPoolMax && (!retrying || memberCount == 0 || prevGone)
+		busy := inFlightCount > 0
+		queueFull := waiterCount >= fillFirstQueueMax
 
 		downrank := pool == m.fillFirstDownrank
 		if canExpand {
@@ -240,23 +294,25 @@ func (m *Manager) acquireFillFirstAuth(
 				}
 				if downrank && !isXAIDownrankAuth(auth) {
 					hold.occupy(auth.ID)
-					return auth, exec, provider, nil
+					return m.applyBoundProxy(auth), exec, provider, nil
 				}
 				if pool.addAndOccupy(auth.ID) {
 					hold.occupy(auth.ID)
-					return auth, exec, provider, nil
+					return m.applyBoundProxy(auth), exec, provider, nil
 				}
+				tried[auth.ID] = struct{}{}
+				continue
 			}
 			if downrank && (auth == nil || errPick != nil) {
 				fallback, fallbackExec, fallbackProvider, errFallback := m.pickRandomAvailableAuth(model, providerSet, skip, false)
 				if errFallback == nil && fallback != nil {
 					if other == nil || !other.hasMember(fallback.ID) {
 						hold.occupy(fallback.ID)
-						return fallback, fallbackExec, fallbackProvider, nil
+						return m.applyBoundProxy(fallback), fallbackExec, fallbackProvider, nil
 					}
 				}
 			}
-			if errPick != nil && !busy {
+			if errPick != nil && (!busy || prevGone) {
 				return nil, nil, "", errPick
 			}
 		}
@@ -270,7 +326,7 @@ func (m *Manager) acquireFillFirstAuth(
 				auth, exec, provider, errPick = m.pickRandomAvailableAuth(model, providerSet, tried, false)
 				if errPick == nil && auth != nil && (other == nil || !other.hasMember(auth.ID)) {
 					hold.occupy(auth.ID)
-					return auth, exec, provider, nil
+					return m.applyBoundProxy(auth), exec, provider, nil
 				}
 			}
 			if errPick != nil {
@@ -282,19 +338,32 @@ func (m *Manager) acquireFillFirstAuth(
 				}
 				if downrank && !isXAIDownrankAuth(auth) {
 					hold.occupy(auth.ID)
-					return auth, exec, provider, nil
+					return m.applyBoundProxy(auth), exec, provider, nil
 				}
 				if pool.addAndOccupy(auth.ID) {
 					hold.occupy(auth.ID)
-					return auth, exec, provider, nil
+					return m.applyBoundProxy(auth), exec, provider, nil
 				}
 			}
 			return nil, nil, "", &Error{Code: "auth_not_found", Message: "no auth available"}
 		}
 		if queueFull {
+			log.Warnf("fill-first busy model=%s members=%d in_flight=%d waiters=%d", model, memberCount, inFlightCount, waiterCount)
 			return nil, nil, "", fillFirstBusyError()
 		}
-		if errWait := pool.wait(ctx); errWait != nil {
+		if prevGone {
+			// Quota/disable already took this request's slot. Do not wait on
+			// another account's in-flight; retry expand immediately, or fail
+			// fast if the bucket is already full of other accounts.
+			if !canExpand {
+				log.Warnf("fill-first drop-replace full model=%s members=%d in_flight=%d waiters=%d", model, memberCount, inFlightCount, waiterCount)
+				return nil, nil, "", fillFirstBusyError()
+			}
+			log.Warnf("fill-first replace after drop model=%s members=%d in_flight=%d waiters=%d", model, memberCount, inFlightCount, waiterCount)
+			continue
+		}
+		log.Warnf("fill-first waiting model=%s members=%d in_flight=%d waiters=%d timeout=%s", model, memberCount, inFlightCount, waiterCount, fillFirstWaitTimeout)
+		if errWait := pool.wait(ctx, gen); errWait != nil {
 			return nil, nil, "", errWait
 		}
 	}
@@ -322,10 +391,20 @@ func (m *Manager) pruneFillFirstMembers() {
 	}
 	m.mu.RUnlock()
 	if m.fillFirst != nil {
-		m.fillFirst.pruneMissing(mainAlive)
+		for _, id := range m.fillFirst.pruneMissing(mainAlive) {
+			m.unbindAccountProxy(id, "missing")
+		}
+		if purged := m.fillFirst.pruneStaleInFlight(10 * time.Minute); purged > 0 {
+			log.Warnf("fill-first pruned %d stale in-flight accounts from main pool", purged)
+		}
 	}
 	if m.fillFirstDownrank != nil {
-		m.fillFirstDownrank.pruneMissing(downrankAlive)
+		for _, id := range m.fillFirstDownrank.pruneMissing(downrankAlive) {
+			m.unbindAccountProxy(id, "missing")
+		}
+		if purged := m.fillFirstDownrank.pruneStaleInFlight(10 * time.Minute); purged > 0 {
+			log.Warnf("fill-first pruned %d stale in-flight accounts from downrank pool", purged)
+		}
 	}
 }
 
@@ -383,7 +462,7 @@ func (m *Manager) occupyFillFirstMember(pool *fillFirstPool, model string, provi
 		pool.release(occupied)
 		return nil, nil, ""
 	}
-	return auth.Clone(), exec, provider
+	return m.applyBoundProxy(auth.Clone()), exec, provider
 }
 
 func (h *fillFirstHold) occupy(id string) {
@@ -442,10 +521,10 @@ func (m *Manager) occupyFillFirstSticky(pool *fillFirstPool, id string, provider
 		pool.release(id)
 		return nil, nil, ""
 	}
-	return clone, exec, provider
+	return m.applyBoundProxy(clone), exec, provider
 }
 
-func attachFillFirstStreamHold(result *cliproxyexecutor.StreamResult, finish func()) *cliproxyexecutor.StreamResult {
+func attachFillFirstStreamHold(ctx context.Context, result *cliproxyexecutor.StreamResult, finish func()) *cliproxyexecutor.StreamResult {
 	if finish == nil {
 		return result
 	}
@@ -453,12 +532,32 @@ func attachFillFirstStreamHold(result *cliproxyexecutor.StreamResult, finish fun
 		finish()
 		return result
 	}
+	var once sync.Once
+	safeFinish := func() {
+		once.Do(finish)
+	}
 	out := make(chan cliproxyexecutor.StreamChunk)
 	go func() {
-		defer finish()
+		defer safeFinish()
 		defer close(out)
-		for chunk := range result.Chunks {
-			out <- chunk
+		var done <-chan struct{}
+		if ctx != nil {
+			done = ctx.Done()
+		}
+		for {
+			select {
+			case <-done:
+				return
+			case chunk, ok := <-result.Chunks:
+				if !ok {
+					return
+				}
+				select {
+				case out <- chunk:
+				case <-done:
+					return
+				}
+			}
 		}
 	}()
 	wrapped := *result

@@ -44,7 +44,7 @@ func claudeOAuthRequestCancellation(ctx context.Context, auth *Auth, err error) 
 // It supports multiple providers for the same model and round-robins the starting provider per model.
 func (m *Manager) Execute(ctx context.Context, providers []string, req cliproxyexecutor.Request, opts cliproxyexecutor.Options) (cliproxyexecutor.Response, error) {
 	req, opts = cliproxysession.Enrich(req, opts)
-	ctx, finish := m.beginFillFirstHold(ctx, req, &opts)
+	ctx, finish := m.beginFillFirstHold(ctx, providers, req, &opts)
 	defer finish()
 	if !skipCredentialRetry(ctx) {
 		if errMarked := m.errIfGrokSessionMarked(ctx, req, opts); errMarked != nil {
@@ -110,7 +110,7 @@ func (m *Manager) Execute(ctx context.Context, providers []string, req cliproxye
 // It supports multiple providers for the same model and round-robins the starting provider per model.
 func (m *Manager) ExecuteCount(ctx context.Context, providers []string, req cliproxyexecutor.Request, opts cliproxyexecutor.Options) (cliproxyexecutor.Response, error) {
 	req, opts = cliproxysession.Enrich(req, opts)
-	ctx, finish := m.beginFillFirstHold(ctx, req, &opts)
+	ctx, finish := m.beginFillFirstHold(ctx, providers, req, &opts)
 	defer finish()
 	normalized := m.normalizeProviders(providers)
 	if len(normalized) == 0 {
@@ -157,7 +157,7 @@ func (m *Manager) ExecuteCount(ctx context.Context, providers []string, req clip
 // It supports multiple providers for the same model and round-robins the starting provider per model.
 func (m *Manager) ExecuteStream(ctx context.Context, providers []string, req cliproxyexecutor.Request, opts cliproxyexecutor.Options) (*cliproxyexecutor.StreamResult, error) {
 	req, opts = cliproxysession.Enrich(req, opts)
-	ctx, finish := m.beginFillFirstHold(ctx, req, &opts)
+	ctx, finish := m.beginFillFirstHold(ctx, providers, req, &opts)
 	if !skipCredentialRetry(ctx) {
 		if errMarked := m.errIfGrokSessionMarked(ctx, req, opts); errMarked != nil {
 			finish()
@@ -189,11 +189,11 @@ func (m *Manager) ExecuteStream(ctx context.Context, providers []string, req cli
 		result, errStream := m.executeStreamMixedOnce(ctx, normalized, req, opts, maxRetryCredentials, &homeRetryLimit, attempt, defaultRequestRetry)
 		if errStream == nil {
 			m.clearGrokSessionNoThink(req, opts)
-			return attachFillFirstStreamHold(result, finish), nil
+			return attachFillFirstStreamHold(ctx, result, finish), nil
 		}
 		if skipCredentialRetry(ctx) {
 			if fallback, ok := streamFromNoThink(errStream); ok {
-				return attachFillFirstStreamHold(fallback, finish), nil
+				return attachFillFirstStreamHold(ctx, fallback, finish), nil
 			}
 			finish()
 			return nil, unwrapRequestStopError(errStream)
@@ -238,12 +238,12 @@ func (m *Manager) ExecuteStream(ctx context.Context, providers []string, req cli
 				finish()
 				return nil, errCredits
 			} else if ok {
-				return attachFillFirstStreamHold(result, finish), nil
+				return attachFillFirstStreamHold(ctx, result, finish), nil
 			}
 		}
 		var bootstrapErr *streamBootstrapError
 		if errors.As(lastErr, &bootstrapErr) && bootstrapErr != nil {
-			return attachFillFirstStreamHold(streamErrorResult(bootstrapErr.Headers(), lastErr), finish), nil
+			return attachFillFirstStreamHold(ctx, streamErrorResult(bootstrapErr.Headers(), lastErr), finish), nil
 		}
 		finish()
 		return nil, lastErr

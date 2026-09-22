@@ -119,6 +119,7 @@ type Manager struct {
 	fillFirstDownrank         *fillFirstPool
 	grokSessionNoThink        *grokSessionNoThinkTracker
 	hook                      Hook
+	accountBinder             AccountProxyBinder
 	mu                        sync.RWMutex
 	selectorMu                sync.Mutex
 	configCooldownMu          sync.Mutex

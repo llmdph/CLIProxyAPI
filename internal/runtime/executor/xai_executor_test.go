@@ -5420,8 +5420,8 @@ func TestApplyXAIChatHeaders(t *testing.T) {
 		if got := req.Header.Get("x-device-mac"); got == "" {
 			t.Fatal("x-device-mac missing")
 		}
-		if got := req.Header.Get("Connection"); got != "close" {
-			t.Fatalf("Connection = %q, want close", got)
+		if got := req.Header.Get("Connection"); got == "close" {
+			t.Fatalf("Connection = %q, same account must keep the session", got)
 		}
 		if got := req.Header.Get("x-grok-session-id"); got != "conv-1" {
 			t.Fatalf("x-grok-session-id = %q, want conv-1", got)

@@ -6,10 +6,12 @@ package cliproxy
 import (
 	"context"
 	"fmt"
+	"strings"
 
 	configaccess "github.com/router-for-me/CLIProxyAPI/v7/internal/access/config_access"
 	"github.com/router-for-me/CLIProxyAPI/v7/internal/api"
 	"github.com/router-for-me/CLIProxyAPI/v7/internal/pluginhost"
+	"github.com/router-for-me/CLIProxyAPI/v7/internal/warprotate"
 	"github.com/router-for-me/CLIProxyAPI/v7/internal/watcher"
 	sdkaccess "github.com/router-for-me/CLIProxyAPI/v7/sdk/access"
 	sdkAuth "github.com/router-for-me/CLIProxyAPI/v7/sdk/auth"
@@ -259,6 +261,10 @@ func (b *Builder) Build() (*Service, error) {
 	// Attach a default RoundTripper provider so providers can opt-in per-auth transports.
 	coreManager.SetRoundTripperProvider(newDefaultRoundTripperProvider())
 	coreManager.SetConfig(b.cfg)
+	if b.cfg != nil && strings.TrimSpace(b.cfg.WarpRotateURL) != "" {
+		warprotate.SetBaseURL(b.cfg.WarpRotateURL)
+		coreManager.SetAccountProxyBinder(warprotate.AccountBinder{})
+	}
 	coreManager.SetOAuthModelAlias(b.cfg.OAuthModelAlias)
 	if pluginHost != nil {
 		coreManager.SetPluginScheduler(pluginHost)

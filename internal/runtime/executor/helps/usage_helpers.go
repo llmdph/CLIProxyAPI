@@ -37,6 +37,7 @@ type UsageReporter struct {
 	authType        string
 	apiKey          string
 	source          string
+	proxyURL        string
 	reasoning       string
 	serviceTier     string
 	generate        bool
@@ -86,6 +87,7 @@ func NewUsageReporter(ctx context.Context, provider, model string, auth *cliprox
 		reporter.accessTokenHash = authAccessTokenSHA256(auth)
 		reporter.account = auth.DisplayAccount()
 		reporter.channel = cliproxyauth.XAIChannelOf(auth)
+		reporter.proxyURL = strings.TrimSpace(auth.ProxyURL)
 	}
 	reporter.requestClass = cliproxyexecutor.RequestClassFromContext(ctx)
 	return reporter
@@ -300,6 +302,7 @@ func (r *UsageReporter) buildRecordForModel(model string, detail usage.Detail, f
 		Account:             r.account,
 		RequestClass:        r.requestClass,
 		Channel:             r.channel,
+		ProxyURL:            r.proxyURL,
 		AccessTokenSHA256:   r.accessTokenFingerprint(),
 		AuthType:            r.authType,
 		ReasoningEffort:     r.reasoning,

@@ -13,6 +13,8 @@ import (
 	"time"
 
 	internallogging "github.com/router-for-me/CLIProxyAPI/v7/internal/logging"
+	"github.com/router-for-me/CLIProxyAPI/v7/internal/runtime/executor/helps"
+	"github.com/router-for-me/CLIProxyAPI/v7/internal/warprotate"
 	coreexecutor "github.com/router-for-me/CLIProxyAPI/v7/sdk/cliproxy/executor"
 	coreusage "github.com/router-for-me/CLIProxyAPI/v7/sdk/cliproxy/usage"
 	"github.com/router-for-me/CLIProxyAPI/v7/sdk/proxyutil"
@@ -79,10 +81,16 @@ func (p *usagePlugin) HandleUsage(ctx context.Context, record coreusage.Record) 
 			hasThinking = true
 		}
 	}
-	// Build: only plaintext think counts. Empty/0-char blobs stay 无.
-	// Console encrypted reasoning may have 0 visible chars and still count.
-	if thinkingLen <= 0 && !strings.EqualFold(strings.TrimSpace(record.Channel), "console") {
-		hasThinking = false
+	// Build: only visible think text counts.
+	// Console create/stream often returns usage.reasoning_tokens without summary
+	// text; use that as the Think size so a thinking reply is not shown as 无.
+	if thinkingLen <= 0 {
+		if strings.EqualFold(strings.TrimSpace(record.Channel), "console") && detail.ReasoningTokens > 0 {
+			hasThinking = true
+			thinkingLen = detail.ReasoningTokens
+		} else {
+			hasThinking = false
+		}
 	}
 
 	failed := record.Failed
@@ -161,20 +169,64 @@ func (p *usagePlugin) HandleUsage(ctx context.Context, record coreusage.Record) 
 		},
 	}
 	defaultStore.add(entry)
-	go enrichExitIP(entry.ID)
+	go enrichExit(entry.ID, ctx, record.AuthID, record.ProxyURL)
 }
 
-func enrichExitIP(entryID string) {
-	proxyURL := currentProxyURL()
-	exitIP := probeExitIPVia(proxyURL)
+func enrichExit(entryID string, ctx context.Context, authID, requestProxy string) {
+	proxyURL := firstNonEmpty(requestProxy, currentProxyURL())
 	exitNode := proxyHostLabel(proxyURL)
-	// When CPA itself exits via Clash/Mihomo, enrich with the active leaf node name.
+	if label := warprotate.NodeLabelFromHost(exitNode); label != "" {
+		exitNode = label
+	}
+	exitIP := ""
+	meta := helps.WarpDialMeta(ctx)
+	if meta.Label != "" {
+		exitNode = meta.Label
+	}
+	if warprotate.LooksLikeIP(meta.ExitIP) {
+		exitIP = meta.ExitIP
+	}
+	if info := warprotate.LookupAccount(ctx, authID); info != nil {
+		if info.Label != "" {
+			exitNode = info.Label
+		}
+		if warprotate.LooksLikeIP(info.ExitIP) {
+			exitIP = info.ExitIP
+		}
+	}
+	client := strings.TrimSpace(meta.Client)
+	if looksLikeWarpProxy(proxyURL) && (exitNode == proxyHostLabel(proxyURL) || exitNode == "backup" || exitIP == "") {
+		if client != "" {
+			if info := warprotate.Lookup(ctx, client); info != nil {
+				if info.Label != "" {
+					exitNode = info.Label
+				}
+				if warprotate.LooksLikeIP(info.ExitIP) {
+					exitIP = info.ExitIP
+				}
+			}
+		}
+	}
 	if looksLikeClashProxy(proxyURL) {
 		if node := latestClashNode(); node != "" {
 			exitNode = node
 		}
 	}
+	if !warprotate.LooksLikeIP(exitIP) && !looksLikeWarpProxy(proxyURL) {
+		probed := probeExitIPVia(proxyURL)
+		if warprotate.LooksLikeIP(probed) {
+			exitIP = probed
+		}
+	}
 	defaultStore.updateExit(entryID, exitIP, exitNode)
+}
+
+func looksLikeWarpProxy(rawProxy string) bool {
+	host := strings.ToLower(proxyHostLabel(rawProxy))
+	if host == "" || host == "direct" {
+		return false
+	}
+	return strings.Contains(host, "warp-lb") || strings.Contains(host, "warp")
 }
 
 func proxyHostLabel(rawProxy string) string {
@@ -272,7 +324,11 @@ func probeExitIPVia(rawProxy string) string {
 	if err != nil {
 		return ""
 	}
-	return strings.TrimSpace(string(raw))
+	value := strings.TrimSpace(string(raw))
+	if !warprotate.LooksLikeIP(value) {
+		return ""
+	}
+	return value
 }
 
 func firstNonEmpty(values ...string) string {

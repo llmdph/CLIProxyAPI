@@ -520,7 +520,7 @@ func TestThinkOKCallbackRestoresDownrankAuth(t *testing.T) {
 		t.Fatal("seed downrank")
 	}
 	opts := cliproxyexecutor.Options{}
-	ctx, finish := m.beginFillFirstHold(context.Background(), cliproxyexecutor.Request{Payload: []byte(`{"input":"hello","reasoning":{"effort":"high"}}`)}, &opts)
+	ctx, finish := m.beginFillFirstHold(context.Background(), nil, cliproxyexecutor.Request{Payload: []byte(`{"input":"hello","reasoning":{"effort":"high"}}`)}, &opts)
 	t.Cleanup(finish)
 	cliproxyexecutor.NotifyXAIThinkOK(ctx, auth.ID)
 	updated, ok := m.GetByID(auth.ID)

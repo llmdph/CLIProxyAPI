@@ -21,7 +21,6 @@ const (
 	thinkProbeHTTPTimeout = 25 * time.Second
 	thinkProbeDefaultN    = 4
 	thinkProbeMaxWorkers  = 8
-	thinkProbeMaxNames    = 500
 )
 
 type thinkProbeResult struct {
@@ -105,10 +104,6 @@ func (h *Handler) PostAuthFilesThinkProbe(c *gin.Context) {
 	names := uniqueNonEmptyNames(req.Names)
 	if len(names) == 0 {
 		c.JSON(http.StatusBadRequest, gin.H{"error": "names is required"})
-		return
-	}
-	if len(names) > thinkProbeMaxNames {
-		c.JSON(http.StatusBadRequest, gin.H{"error": fmt.Sprintf("too many names (max %d)", thinkProbeMaxNames)})
 		return
 	}
 	if h.authManager == nil {

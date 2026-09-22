@@ -15,12 +15,14 @@ import (
 )
 
 // xaiThinkEvidence mirrors the LLM request-log "Think流" column:
-// good = hasThink && length > 0, or Console encrypted reasoning.
-// bad = missing stream or 有(0字).
+// good = hasThink && length > 0.
+// Console may also pass on usage.reasoning_tokens or opaque encrypted replay
+// blobs; those are not decryptable think text.
 type xaiThinkEvidence struct {
 	HasThink  bool
 	Length    int
 	Encrypted bool
+	Tokens    int
 }
 
 func (e xaiThinkEvidence) ok() bool  { return e.HasThink && e.Length > 0 }
@@ -30,11 +32,17 @@ func xaiThinkOK(auth *cliproxyauth.Auth, ev xaiThinkEvidence) bool {
 	if ev.ok() {
 		return true
 	}
-	return ev.Encrypted && cliproxyauth.XAIUsingConsoleChannel(auth)
+	if !cliproxyauth.XAIUsingConsoleChannel(auth) {
+		return false
+	}
+	return ev.Tokens > 0 || ev.Encrypted
 }
 
 func (e xaiThinkEvidence) detail() string {
-	if e.Encrypted && e.Length == 0 {
+	if e.ok() {
+		return fmt.Sprintf("Think流有(%d字)", e.Length)
+	}
+	if e.Tokens > 0 || e.Encrypted {
 		return "有Think流"
 	}
 	if !e.HasThink {
@@ -105,17 +113,24 @@ func walkXAIThinkJSON(node any, ev *xaiThinkEvidence) {
 }
 
 func walkXAIThinkObject(obj map[string]any, ev *xaiThinkEvidence) {
+	if usage, ok := obj["usage"].(map[string]any); ok {
+		ingestXAIUsage(usage, ev)
+	}
+	if resp, ok := obj["response"].(map[string]any); ok {
+		walkXAIThinkJSON(resp, ev)
+	}
 	eventType := xaiAsString(obj["type"])
 	switch eventType {
 	case "response.reasoning_text.delta", "response.reasoning_summary_text.delta":
-		if text := xaiAsString(obj["delta"]); text != "" {
+		if text := xaiDeltaText(obj); text != "" {
 			addXAIThinkText(ev, text)
 		} else {
 			ev.HasThink = true
 		}
 		return
-	case "response.reasoning_text.done", "response.reasoning_summary_text.done":
-		if text := firstNonEmptyString(xaiAsString(obj["text"]), xaiNestedString(obj, "part", "text")); text != "" {
+	case "response.reasoning_text.done", "response.reasoning_summary_text.done",
+		"response.reasoning_summary_part.added", "response.reasoning_summary_part.done":
+		if text := firstNonEmptyString(xaiDeltaText(obj), xaiAsString(obj["text"]), xaiNestedString(obj, "part", "text")); text != "" {
 			addXAIThinkText(ev, text)
 		} else {
 			ev.HasThink = true
@@ -375,6 +390,14 @@ func preferXAIThinkEvidence(current, next xaiThinkEvidence) xaiThinkEvidence {
 	if next.Length > current.Length {
 		return next
 	}
+	if next.Tokens > current.Tokens {
+		next.HasThink = next.HasThink || current.HasThink
+		next.Encrypted = next.Encrypted || current.Encrypted
+		if current.Length > next.Length {
+			next.Length = current.Length
+		}
+		return next
+	}
 	if next.Encrypted && !current.Encrypted {
 		return next
 	}
@@ -401,8 +424,63 @@ func xaiRecordThinkEvidence(ctx context.Context, auth *cliproxyauth.Auth, ev xai
 		llmreqlog.RecordThinkEvidence(ctx, true, int64(ev.Length))
 		return
 	}
-	if ev.Encrypted && cliproxyauth.XAIUsingConsoleChannel(auth) {
-		llmreqlog.RecordThinkEvidence(ctx, true, 0)
+	if ev.Tokens > 0 && cliproxyauth.XAIUsingConsoleChannel(auth) {
+		llmreqlog.RecordThinkEvidence(ctx, true, int64(ev.Tokens))
+	}
+}
+
+func xaiDeltaText(obj map[string]any) string {
+	if obj == nil {
+		return ""
+	}
+	if text := xaiAsString(obj["delta"]); text != "" {
+		return text
+	}
+	if nested, ok := obj["delta"].(map[string]any); ok {
+		return firstNonEmptyString(xaiAsString(nested["text"]), xaiAsString(nested["delta"]))
+	}
+	return ""
+}
+
+func ingestXAIUsage(usage map[string]any, ev *xaiThinkEvidence) {
+	if usage == nil || ev == nil {
+		return
+	}
+	tokens := xaiUsageReasoningTokens(usage)
+	if tokens > ev.Tokens {
+		ev.Tokens = tokens
+	}
+}
+
+func xaiUsageReasoningTokens(usage map[string]any) int {
+	n := 0
+	for _, key := range []string{"output_tokens_details", "completion_tokens_details"} {
+		details, _ := usage[key].(map[string]any)
+		if details == nil {
+			continue
+		}
+		if v := xaiAsInt(details["reasoning_tokens"]); v > n {
+			n = v
+		}
+	}
+	return n
+}
+
+func xaiAsInt(v any) int {
+	switch t := v.(type) {
+	case int:
+		return t
+	case int32:
+		return int(t)
+	case int64:
+		return int(t)
+	case float64:
+		return int(t)
+	case json.Number:
+		i, _ := t.Int64()
+		return int(i)
+	default:
+		return 0
 	}
 }
 

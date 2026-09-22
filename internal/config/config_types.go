@@ -135,6 +135,17 @@ type CodexHeaderDefaults struct {
 type XAIConfig struct {
 	// InjectXSearch injects xAI's native x_search tool when the request does not declare it.
 	InjectXSearch bool `yaml:"inject-x-search" json:"inject-x-search"`
+	// EnableConsole allows switching a Build account onto Console after quota.
+	// Omitted defaults to true.
+	EnableConsole *bool `yaml:"enable-console" json:"enable-console"`
+}
+
+// ConsoleEnabled reports whether Console may be used. Default true when unset.
+func (c XAIConfig) ConsoleEnabled() bool {
+	if c.EnableConsole == nil {
+		return true
+	}
+	return *c.EnableConsole
 }
 
 // AntigravityConfig configures provider-wide Antigravity request behavior.

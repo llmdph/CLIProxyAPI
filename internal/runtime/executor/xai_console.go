@@ -17,7 +17,6 @@ import (
 	"time"
 
 	"github.com/google/uuid"
-	"github.com/router-for-me/CLIProxyAPI/v7/internal/runtime/executor/helps"
 	cliproxyauth "github.com/router-for-me/CLIProxyAPI/v7/sdk/cliproxy/auth"
 	"github.com/tidwall/gjson"
 	"github.com/tidwall/sjson"
@@ -57,26 +56,43 @@ func (e *XAIExecutor) applyXAIConsoleRequestBody(auth *cliproxyauth.Auth, prepar
 	if prepared == nil || !cliproxyauth.XAIUsingConsoleChannel(auth) {
 		return
 	}
-	prepared.body = ensureXAIConsoleReasoningInclude(prepared.body)
-	prepared.body = ensureXAIConsoleReasoningSummary(prepared.body)
+	// Official docs: encrypted thinking is returned only when requested via
+	// include=["reasoning.encrypted_content"] or use_encrypted_content=true.
+	// Do not opt into ciphertext. Do not force reasoning.summary=detailed:
+	// Console still will not return readable think text, and detailed delays TTFT.
+	prepared.body = stripXAIConsoleEncryptedThink(prepared.body)
 }
 
-func ensureXAIConsoleReasoningInclude(body []byte) []byte {
-	const includeValue = "reasoning.encrypted_content"
+func stripXAIConsoleEncryptedThink(body []byte) []byte {
+	body, _ = sjson.DeleteBytes(body, "use_encrypted_content")
 	include := gjson.GetBytes(body, "include")
-	if include.Exists() && include.IsArray() {
-		for _, item := range include.Array() {
-			if item.String() == includeValue {
-				return body
+	if !include.Exists() {
+		return body
+	}
+	if !include.IsArray() {
+		if include.String() == "reasoning.encrypted_content" {
+			updated, err := sjson.DeleteBytes(body, "include")
+			if err == nil {
+				return updated
 			}
 		}
-		updated, err := sjson.SetBytes(body, "include.-1", includeValue)
+		return body
+	}
+	kept := make([]any, 0, len(include.Array()))
+	for _, item := range include.Array() {
+		if item.String() == "reasoning.encrypted_content" {
+			continue
+		}
+		kept = append(kept, item.Value())
+	}
+	if len(kept) == 0 {
+		updated, err := sjson.DeleteBytes(body, "include")
 		if err != nil {
 			return body
 		}
 		return updated
 	}
-	updated, err := sjson.SetBytes(body, "include.0", includeValue)
+	updated, err := sjson.SetBytes(body, "include", kept)
 	if err != nil {
 		return body
 	}
@@ -84,18 +100,7 @@ func ensureXAIConsoleReasoningInclude(body []byte) []byte {
 }
 
 func ensureXAIConsoleReasoningSummary(body []byte) []byte {
-	effort := strings.ToLower(strings.TrimSpace(gjson.GetBytes(body, "reasoning.effort").String()))
-	if effort == "none" {
-		return body
-	}
-	if strings.TrimSpace(gjson.GetBytes(body, "reasoning.summary").String()) != "" {
-		return body
-	}
-	updated, err := sjson.SetBytes(body, "reasoning.summary", "auto")
-	if err != nil {
-		return body
-	}
-	return updated
+	return body
 }
 
 func xaiConsoleCacheKey(auth *cliproxyauth.Auth) string {
@@ -112,8 +117,7 @@ func (e *XAIExecutor) doXAIChatHTTP(ctx context.Context, auth *cliproxyauth.Auth
 		return nil, fmt.Errorf("xai console: missing http client")
 	}
 	if cliproxyauth.XAIUsingConsoleChannel(auth) {
-		mintClient := helps.NewFreshXAIHTTPClient(ctx, e.cfg, auth, 0)
-		if err := e.prepareConsoleChatRequest(ctx, auth, req, mintClient); err != nil {
+		if err := e.prepareConsoleChatRequest(ctx, auth, req, client); err != nil {
 			return nil, err
 		}
 	}

@@ -47,6 +47,39 @@ func TestBuildQuotaSwitchesToConsole(t *testing.T) {
 	}
 }
 
+func TestBuildQuotaDoesNotSwitchToConsoleWhenDisabled(t *testing.T) {
+	SetXAIConsoleEnabled(false)
+	t.Cleanup(func() { SetXAIConsoleEnabled(true) })
+	m := NewManager(nil, &FillFirstSelector{}, nil)
+	auth := &Auth{
+		ID:       "xai-no-console@outlook.com",
+		Provider: "xai",
+		Status:   StatusActive,
+		Metadata: map[string]any{
+			"type":  "xai",
+			"email": "xai-no-console@outlook.com",
+			"sso":   "console-sso-token",
+		},
+	}
+	if _, err := m.Register(context.Background(), auth); err != nil {
+		t.Fatalf("register: %v", err)
+	}
+	quotaErr := errors.New(`{"code":"subscription:free-usage-exhausted"}`)
+	if !m.disableXAIAuthIfQuotaExhausted(context.Background(), auth, "xai", quotaErr) {
+		t.Fatal("expected quota handler")
+	}
+	updated, ok := m.GetByID(auth.ID)
+	if !ok || updated == nil {
+		t.Fatal("missing auth")
+	}
+	if !updated.Disabled {
+		t.Fatal("build quota should disable this account instead of switching to console")
+	}
+	if XAIUsingConsoleChannel(updated) {
+		t.Fatal("console must stay off")
+	}
+}
+
 func TestConsoleQuotaReturnsToBuildWhenWindowExpired(t *testing.T) {
 	t.Parallel()
 	m := NewManager(nil, &FillFirstSelector{}, nil)

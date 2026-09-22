@@ -124,6 +124,9 @@ func BuildConfigChangeDetails(oldCfg, newCfg *config.Config) []string {
 	if oldCfg.XAI.InjectXSearch != newCfg.XAI.InjectXSearch {
 		changes = append(changes, fmt.Sprintf("xai.inject-x-search: %t -> %t", oldCfg.XAI.InjectXSearch, newCfg.XAI.InjectXSearch))
 	}
+	if oldCfg.XAI.ConsoleEnabled() != newCfg.XAI.ConsoleEnabled() {
+		changes = append(changes, fmt.Sprintf("xai.enable-console: %t -> %t", oldCfg.XAI.ConsoleEnabled(), newCfg.XAI.ConsoleEnabled()))
+	}
 	oldLiveRelay := oldCfg.Codex.LiveMediaRelay
 	newLiveRelay := newCfg.Codex.LiveMediaRelay
 	if oldLiveRelay.Enabled != newLiveRelay.Enabled {

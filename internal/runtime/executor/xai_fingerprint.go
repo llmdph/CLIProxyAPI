@@ -10,6 +10,8 @@ import (
 	"sync"
 
 	"github.com/google/uuid"
+
+	"github.com/router-for-me/CLIProxyAPI/v7/internal/runtime/executor/helps"
 )
 
 // xaiClientIdentity is a synthetic Grok CLI machine profile. Official chat-proxy
@@ -17,8 +19,9 @@ import (
 // a persistent machine fingerprint.
 //
 // Device-level fields stick per auth account. Request-scoped ids (req-id /
-// traceparent) still rotate every HTTP call. A new device profile is minted only
-// when a different auth id is used (account rotation after quota / no-think).
+// traceparent) rotate every HTTP call, matching a real Grok CLI. A new device
+// profile is minted only when a different auth id is used. Same account keeps
+// Connection reuse; those two ids are not a machine fingerprint.
 type xaiClientIdentity struct {
 	AgentID        string
 	RequestID      string
@@ -115,6 +118,15 @@ func xaiIdentityForAuth(authID string) xaiClientIdentity {
 	return refreshXAIRequestScopedIdentity(identity)
 }
 
+func refreshXAIRequestScopedIdentity(identity xaiClientIdentity) xaiClientIdentity {
+	identity.RequestID = uuid.NewString()
+	traceID := randomHex(16)
+	spanID := randomHex(8)
+	identity.TraceParent = "00-" + traceID + "-" + spanID + "-01"
+	identity.TraceState = ""
+	return identity
+}
+
 // InvalidateXAIClientIdentity drops the cached device profile for an auth.
 // Next use of that account mints a fresh fingerprint.
 func InvalidateXAIClientIdentity(authID string) {
@@ -123,15 +135,7 @@ func InvalidateXAIClientIdentity(authID string) {
 		return
 	}
 	xaiIdentityByAuth.Delete(authID)
-}
-
-func refreshXAIRequestScopedIdentity(identity xaiClientIdentity) xaiClientIdentity {
-	identity.RequestID = uuid.NewString()
-	traceID := randomHex(16)
-	spanID := randomHex(8)
-	identity.TraceParent = "00-" + traceID + "-" + spanID + "-01"
-	identity.TraceState = ""
-	return identity
+	helps.InvalidateStickyXAIHTTPClient(authID)
 }
 
 func pickXAIUAPlatform() xaiUAPlatform {
@@ -180,7 +184,9 @@ func applyXAIFreshClientIdentity(r *http.Request, identity xaiClientIdentity, in
 	if r == nil {
 		return
 	}
-	r.Header.Set("Connection", "close")
+	// HTTP/2 forbids Connection; omitting it lets the sticky transport reuse the
+	// account's TCP/h2 session instead of forcing a close.
+	r.Header.Del("Connection")
 	if identity.AgentID != "" {
 		r.Header.Set("x-grok-agent-id", identity.AgentID)
 	}

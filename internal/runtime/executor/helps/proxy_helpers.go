@@ -279,6 +279,11 @@ func QuarantineWarpAfterNoThink(ctx context.Context, cfg *config.Config, auth *c
 	if ctx == nil {
 		ctx = context.Background()
 	}
+	if auth != nil && warprotate.HasDedicatedBind(auth.ID) {
+		log.Warnf("warprotate: no-think skip shared quarantine, dedicated bind auth=%s", auth.ID)
+		CloseIdleProxyConnections(cfg, auth)
+		return
+	}
 	client := WarpDialClientAddr(ctx)
 	if client == "" {
 		log.Warnf("warprotate: no-think missing SOCKS client addr, still locking warp")
@@ -312,6 +317,7 @@ func HTTPUpstreamDo(ctx context.Context, cfg *config.Config, auth *cliproxyauth.
 	if ctx == nil {
 		ctx = req.Context()
 	}
+	ctx = WithWarpDialRecorder(ctx)
 	PrepareUpstreamForProxy(ctx, cfg, auth)
 	httpReq := req.WithContext(ctx)
 	client := NewProxyAwareHTTPClient(ctx, cfg, auth, timeout)

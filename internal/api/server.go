@@ -24,6 +24,7 @@ import (
 	codexlive "github.com/router-for-me/CLIProxyAPI/v7/internal/client/codex/live"
 	"github.com/router-for-me/CLIProxyAPI/v7/internal/config"
 	"github.com/router-for-me/CLIProxyAPI/v7/internal/llmreqlog"
+	"github.com/router-for-me/CLIProxyAPI/v7/internal/warprotate"
 	"github.com/router-for-me/CLIProxyAPI/v7/internal/logging"
 	"github.com/router-for-me/CLIProxyAPI/v7/internal/managementasset"
 	"github.com/router-for-me/CLIProxyAPI/v7/internal/pluginhost"
@@ -202,6 +203,7 @@ func NewServer(cfg *config.Config, authManager *auth.Manager, accessManager *sdk
 	}
 	managementasset.SetCurrentConfig(cfg)
 	llmreqlog.SetProxyURL(cfg.ProxyURL)
+	warprotate.SetBaseURL(cfg.WarpRotateURL)
 	auth.SetQuotaCooldownDisabled(cfg.DisableCooling)
 	auth.SetTransientErrorCooldownSeconds(cfg.TransientErrorCooldownSeconds)
 	applySignatureCacheConfig(nil, cfg)

@@ -10,6 +10,19 @@ func TestParseConfigBytesXAIConfig(t *testing.T) {
 	if defaultCfg.XAI.InjectXSearch {
 		t.Fatal("xai.inject-x-search = true by default, want false")
 	}
+	if !defaultCfg.XAI.ConsoleEnabled() {
+		t.Fatal("xai.enable-console omitted, want true")
+	}
+
+	disabledCfg, errDisabled := ParseConfigBytes([]byte(`xai:
+  enable-console: false
+`))
+	if errDisabled != nil {
+		t.Fatalf("ParseConfigBytes(disabled console) error = %v", errDisabled)
+	}
+	if disabledCfg.XAI.ConsoleEnabled() {
+		t.Fatal("xai.enable-console = true, want false")
+	}
 
 	enabledCfg, errEnabled := ParseConfigBytes([]byte(`xai:
   inject-x-search: true

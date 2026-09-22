@@ -49,13 +49,14 @@ func TestFillFirstPoolQueueAndBusy(t *testing.T) {
 	}
 	ctx, cancel := context.WithTimeout(context.Background(), time.Second)
 	defer cancel()
+	_, _, _, gen := p.snapshot()
 	var wg sync.WaitGroup
 	errCh := make(chan error, 4)
 	for i := 0; i < 3; i++ {
 		wg.Add(1)
 		go func() {
 			defer wg.Done()
-			errCh <- p.wait(ctx)
+			errCh <- p.wait(ctx, gen)
 		}()
 	}
 	deadline := time.Now().Add(500 * time.Millisecond)
@@ -68,7 +69,7 @@ func TestFillFirstPoolQueueAndBusy(t *testing.T) {
 		}
 		time.Sleep(5 * time.Millisecond)
 	}
-	if err := p.wait(ctx); err == nil {
+	if err := p.wait(ctx, gen); err == nil {
 		t.Fatal("4th waiter should 429")
 	} else if authErr, ok := err.(*Error); !ok || authErr.HTTPStatus != http.StatusTooManyRequests {
 		t.Fatalf("4th waiter err = %v", err)
@@ -150,3 +151,19 @@ func TestFillFirstPoolDropIfIdle(t *testing.T) {
 	}
 }
 
+func TestFillFirstPoolWaitUnblocksAfterLostWake(t *testing.T) {
+	t.Parallel()
+	p := newFillFirstPool()
+	for _, id := range []string{"a", "b", "c", "d", "e"} {
+		if !p.addAndOccupy(id) {
+			t.Fatalf("occupy %s", id)
+		}
+	}
+	_, _, _, gen := p.snapshot()
+	p.release("a")
+	ctx, cancel := context.WithTimeout(context.Background(), 300*time.Millisecond)
+	defer cancel()
+	if err := p.wait(ctx, gen); err != nil {
+		t.Fatalf("lost wake left waiter parked: %v", err)
+	}
+}

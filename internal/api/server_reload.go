@@ -10,6 +10,7 @@ import (
 	"github.com/router-for-me/CLIProxyAPI/v7/internal/cache"
 	"github.com/router-for-me/CLIProxyAPI/v7/internal/config"
 	"github.com/router-for-me/CLIProxyAPI/v7/internal/llmreqlog"
+	"github.com/router-for-me/CLIProxyAPI/v7/internal/warprotate"
 	"github.com/router-for-me/CLIProxyAPI/v7/internal/logging"
 	"github.com/router-for-me/CLIProxyAPI/v7/internal/managementasset"
 	"github.com/router-for-me/CLIProxyAPI/v7/internal/redisqueue"
@@ -175,6 +176,7 @@ func (s *Server) UpdateClientsContext(ctx context.Context, cfg *config.Config) b
 	}
 	managementasset.SetCurrentConfig(cfg)
 	llmreqlog.SetProxyURL(cfg.ProxyURL)
+	warprotate.SetBaseURL(cfg.WarpRotateURL)
 	llmreqlog.SetPersistPath(filepath.Join(logging.ResolveLogDirectory(cfg), "llm-request-logs.json"))
 	if errContext := ctx.Err(); errContext != nil {
 		return false
