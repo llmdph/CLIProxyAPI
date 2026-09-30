@@ -161,6 +161,9 @@ func BuildConfigChangeDetails(oldCfg, newCfg *config.Config) []string {
 	if oldCfg.XAI.ConsoleEnabled() != newCfg.XAI.ConsoleEnabled() {
 		changes = append(changes, fmt.Sprintf("xai.enable-console: %t -> %t", oldCfg.XAI.ConsoleEnabled(), newCfg.XAI.ConsoleEnabled()))
 	}
+	if oldCfg.XAI.Grok47AccountPool() != newCfg.XAI.Grok47AccountPool() {
+		changes = append(changes, fmt.Sprintf("xai.grok-4-7-accounts: %s -> %s", oldCfg.XAI.Grok47AccountPool(), newCfg.XAI.Grok47AccountPool()))
+	}
 	oldLiveRelay := oldCfg.Codex.LiveMediaRelay
 	newLiveRelay := newCfg.Codex.LiveMediaRelay
 	if oldLiveRelay.Enabled != newLiveRelay.Enabled {

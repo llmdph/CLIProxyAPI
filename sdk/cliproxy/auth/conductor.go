@@ -144,6 +144,7 @@ type Manager struct {
 	selector                  Selector
 	fillFirst                 *fillFirstPool
 	fillFirstDownrank         *fillFirstPool
+	fillFirstGrok47           *fillFirstPool
 	grokSessionNoThink        *grokSessionNoThinkTracker
 	hook                      Hook
 	accountBinder             AccountProxyBinder
@@ -219,6 +220,7 @@ func NewManager(store Store, selector Selector, hook Hook) *Manager {
 		selector:              selector,
 		fillFirst:             newFillFirstPool(),
 		fillFirstDownrank:     newFillFirstPool(),
+		fillFirstGrok47:       newFillFirstPool(),
 		grokSessionNoThink:    newGrokSessionNoThinkTracker(),
 		hook:                  hook,
 		auths:                 make(map[string]*Auth),

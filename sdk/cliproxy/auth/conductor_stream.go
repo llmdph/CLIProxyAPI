@@ -136,7 +136,7 @@ func (m *Manager) wrapStreamResult(ctx context.Context, auth *Auth, provider, re
 				failed = true
 				entry := logEntryWithRequestID(ctx)
 				warnLogUpstreamFailure(ctx, entry, provider, resultModel, auth, time.Since(streamStart), chunk.Err)
-				m.disableXAIAuthIfQuotaExhausted(ctx, auth, provider, chunk.Err)
+				m.disableXAIAuthIfAccountFailure(ctx, auth, provider, chunk.Err)
 				rerr := resultErrorFromError(chunk.Err)
 				action, okAction := matchRequestScopedErrorAction(auth, chunk.Err, m.runtimeConfigSnapshot())
 				result := Result{AuthID: auth.ID, Provider: provider, Model: resultModel, RouteModel: routeModel, Success: false, Error: rerr, Options: opts}
@@ -301,7 +301,7 @@ func (m *Manager) executeStreamWithModelPool(ctx context.Context, executor Provi
 				result.CredentialScope = true
 			}
 			applyRequestScopedActionToResult(action, okAction, &result)
-			quotaDisabled := m.disableXAIAuthIfQuotaExhausted(ctx, auth, provider, errStream)
+			quotaDisabled := m.disableXAIAuthIfAccountFailure(ctx, auth, provider, errStream)
 			if okAction {
 				m.recordExecutionResult(ctx, result, auth, ephemeralResult)
 			} else {
@@ -389,7 +389,7 @@ func (m *Manager) executeStreamWithModelPool(ctx context.Context, executor Provi
 			}
 		}
 		if bootstrapErr != nil {
-			if m.disableXAIAuthIfQuotaExhausted(ctx, auth, provider, bootstrapErr) {
+			if m.disableXAIAuthIfAccountFailure(ctx, auth, provider, bootstrapErr) {
 				rerr := resultErrorFromError(bootstrapErr)
 				result := Result{AuthID: auth.ID, Provider: provider, Model: resultModel, Success: false, Error: rerr, Options: execOpts}
 				result.RetryAfter = retryAfterFromError(bootstrapErr)

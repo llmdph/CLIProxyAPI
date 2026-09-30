@@ -28,8 +28,9 @@ const xaiAutoDisableKindValue = "quota_window"
 // same credential when Cloudflare returns a challenge / blocked HTML (often as 400).
 const xaiCloudflareSameAuthMaxAttempts = 3
 
-// xaiAutoReenableEmailSuffix limits automatic quota-window recovery to Outlook
-// accounts only. Operator-disabled non-Outlook credentials stay disabled.
+// xaiAutoReenableEmailSuffix identifies Outlook accounts. Quota-window recovery
+// applies to every xAI account. Operator-disabled and manually disabled
+// credentials stay disabled.
 const xaiAutoReenableEmailSuffix = "@outlook.com"
 
 func xaiAuthEmail(auth *Auth) string {
@@ -63,6 +64,21 @@ func isOutlookXAIAuth(auth *Auth) bool {
 	return email != "" && strings.HasSuffix(email, xaiAutoReenableEmailSuffix)
 }
 
+// isOperatorParkedNonOutlook reports a non-Outlook credential that was parked
+// so other models do not use it. Disabled accounts are not scheduled, including for grok-4.7.
+func isOperatorParkedNonOutlook(auth *Auth) bool {
+	if auth == nil || !isXAIProvider(auth.Provider) || isOutlookXAIAuth(auth) {
+		return false
+	}
+	if xaiAuthEmail(auth) == "" {
+		return false
+	}
+	if !auth.Disabled && auth.Status != StatusDisabled {
+		return false
+	}
+	return strings.Contains(strings.ToLower(xaiStatusMessageOf(auth)), "non-outlook")
+}
+
 func isXAIProvider(provider string) bool {
 	switch strings.ToLower(strings.TrimSpace(provider)) {
 	case "xai", "x-ai", "grok":
@@ -75,6 +91,17 @@ func isXAIProvider(provider string) bool {
 // isXAIQuotaExhaustedError reports Grok free-tier / spending-limit exhaustion
 // (aligned with grok-inspection classify.go). Bare HTTP 429 / temp rate limits
 // must not match so the sticky account is not burned.
+func isXAICredentialInvalidError(err error) bool {
+	if err == nil {
+		return false
+	}
+	blob := strings.ToLower(err.Error())
+	return strings.Contains(blob, "invalid or expired credentials") ||
+		strings.Contains(blob, "no auth context") ||
+		strings.Contains(blob, "bad-credentials") ||
+		strings.Contains(blob, "access token could not be validated")
+}
+
 func isXAIQuotaExhaustedError(err error) bool {
 	if err == nil {
 		return false
@@ -124,6 +151,26 @@ func (m *Manager) disableXAIAuthIfQuotaExhausted(ctx context.Context, auth *Auth
 		return false
 	}
 	m.disableAuthForQuotaExhausted(ctx, auth, err)
+	return true
+}
+
+// disableXAIAuthIfAccountFailure disables an xAI account for quota exhaustion or
+// a dead credential, then lets the caller move the same request to another account.
+func (m *Manager) disableXAIAuthIfAccountFailure(ctx context.Context, auth *Auth, provider string, err error) bool {
+	if m.disableXAIAuthIfQuotaExhausted(ctx, auth, provider, err) {
+		return true
+	}
+	return m.disableXAIAuthIfCredentialInvalid(ctx, auth, provider, err)
+}
+
+func (m *Manager) disableXAIAuthIfCredentialInvalid(ctx context.Context, auth *Auth, provider string, err error) bool {
+	if m == nil || auth == nil || err == nil {
+		return false
+	}
+	if !isXAIProvider(provider) || !isXAICredentialInvalidError(err) {
+		return false
+	}
+	m.disableAuthForInvalidCredentials(ctx, auth, err)
 	return true
 }
 
@@ -201,6 +248,54 @@ func xaiQuotaDetail(err error) string {
 	return "quota_exhausted: " + msg
 }
 
+func (m *Manager) disableAuthForInvalidCredentials(ctx context.Context, auth *Auth, err error) {
+	if m == nil || auth == nil || !isXAIProvider(auth.Provider) {
+		return
+	}
+	clone := auth.Clone()
+	if clone == nil {
+		return
+	}
+	now := time.Now()
+	clone.Disabled = true
+	clone.Status = StatusDisabled
+	clone.StatusMessage = xaiCredentialInvalidDetail(err)
+	clone.Unavailable = false
+	clone.NextRetryAfter = time.Time{}
+	clone.LastError = nil
+	clone.UpdatedAt = now
+	if clone.Metadata == nil {
+		clone.Metadata = make(map[string]any)
+	}
+	clone.Metadata[xaiAutoDisableStatusMessageKey] = clone.StatusMessage
+	delete(clone.Metadata, xaiAutoDisableNextRetryAfterKey)
+	delete(clone.Metadata, xaiAutoDisableKindKey)
+	if _, errUpdate := m.Update(ctx, clone); errUpdate != nil {
+		log.WithError(errUpdate).Warnf("xai: failed to disable auth %s after %s", clone.ID, clone.StatusMessage)
+		return
+	}
+	m.dropFillFirstMember(clone.ID)
+	if m.fillFirstGrok47 != nil {
+		m.fillFirstGrok47.drop(clone.ID)
+	}
+	log.Warnf("xai: disabled auth %s after %s", clone.ID, clone.StatusMessage)
+}
+
+func xaiCredentialInvalidDetail(err error) string {
+	detail := "credentials_invalid"
+	if err == nil {
+		return detail
+	}
+	msg := strings.TrimSpace(err.Error())
+	if msg == "" {
+		return detail
+	}
+	if len(msg) > 240 {
+		msg = msg[:240] + "..."
+	}
+	return detail + ": " + msg
+}
+
 func (m *Manager) applyXAIQuotaDisable(ctx context.Context, clone *Auth, detail string, retryAfter time.Time) {
 	if m == nil || clone == nil {
 		return
@@ -217,6 +312,9 @@ func (m *Manager) applyXAIQuotaDisable(ctx context.Context, clone *Auth, detail 
 		return
 	}
 	m.dropFillFirstMember(clone.ID)
+	if m.fillFirstGrok47 != nil {
+		m.fillFirstGrok47.drop(clone.ID)
+	}
 	log.Warnf("xai: disabled auth %s after %s", clone.ID, detail)
 }
 
@@ -234,6 +332,10 @@ func (m *Manager) moveAuthToDownrankPool(ctx context.Context, auth *Auth, noThin
 	}
 	now := time.Now()
 	already := isXAIDownrankAuth(clone)
+	if isOperatorParkedNonOutlook(auth) {
+		m.moveParkedNonOutlookToDownrank(ctx, auth, clone, now, already, noThink)
+		return
+	}
 	clone.Disabled = false
 	clone.Status = StatusActive
 	clone.StatusMessage = ""
@@ -250,6 +352,9 @@ func (m *Manager) moveAuthToDownrankPool(ctx context.Context, auth *Auth, noThin
 	if m.fillFirst != nil {
 		m.fillFirst.drop(auth.ID)
 	}
+	if m.fillFirstGrok47 != nil {
+		m.fillFirstGrok47.drop(auth.ID)
+	}
 	m.unbindAccountProxy(auth.ID, "no_think")
 	if m.fillFirstDownrank != nil {
 		_ = m.fillFirstDownrank.addIdle(auth.ID)
@@ -262,6 +367,44 @@ func (m *Manager) moveAuthToDownrankPool(ctx context.Context, auth *Auth, noThin
 		detail = strings.TrimSpace(noThink.Detail)
 	}
 	log.Warnf("xai: moved auth %s to secondary pool after %s", auth.ID, detail)
+}
+
+func (m *Manager) moveParkedNonOutlookToDownrank(ctx context.Context, auth *Auth, clone *Auth, now time.Time, already bool, noThink *cliproxyexecutor.NoThinkStreamError) {
+	if m == nil || auth == nil || clone == nil {
+		return
+	}
+	clone.Disabled = true
+	clone.Status = StatusDisabled
+	msg := strings.TrimSpace(xaiStatusMessageOf(auth))
+	if !strings.Contains(strings.ToLower(msg), "non-outlook") {
+		msg = "disabled non-outlook by operator"
+	}
+	clone.StatusMessage = msg
+	clone.Unavailable = false
+	clone.NextRetryAfter = time.Time{}
+	clone.LastError = nil
+	clone.UpdatedAt = now
+	markXAIDownrank(clone)
+	syncXAIAutoDisableMetadata(clone)
+	if _, errUpdate := m.Update(ctx, clone); errUpdate != nil {
+		log.WithError(errUpdate).Warnf("xai: failed to move auth %s after no-think", auth.ID)
+		return
+	}
+	if m.fillFirst != nil {
+		m.fillFirst.drop(auth.ID)
+	}
+	if m.fillFirstGrok47 != nil {
+		m.fillFirstGrok47.drop(auth.ID)
+	}
+	m.unbindAccountProxy(auth.ID, "no_think")
+	if already {
+		return
+	}
+	detail := "no-think"
+	if noThink != nil && strings.TrimSpace(noThink.Detail) != "" {
+		detail = strings.TrimSpace(noThink.Detail)
+	}
+	log.Warnf("xai: marked parked non-outlook auth %s after %s", auth.ID, detail)
 }
 
 func metadataTruthy(meta map[string]any, key string) bool {
@@ -504,6 +647,9 @@ func shouldKeepXAIAutoDisableSchedule(auth *Auth) bool {
 	if isXAIAutoDisabledStatusMessage(auth.StatusMessage) {
 		return true
 	}
+	if strings.Contains(strings.ToLower(auth.StatusMessage), "credentials_invalid") {
+		return true
+	}
 	return shouldPreserveXAIAutoDisableSchedule(auth)
 }
 
@@ -671,12 +817,10 @@ func xaiDisabledReenableAt(auth *Auth) (time.Time, bool) {
 	if auth == nil || !isXAIProvider(auth.Provider) {
 		return time.Time{}, false
 	}
-	if !isOutlookXAIAuth(auth) {
-		return time.Time{}, false
-	}
 	if !auth.Disabled && auth.Status != StatusDisabled {
 		return time.Time{}, false
 	}
+	outlook := isOutlookXAIAuth(auth)
 	auth.mapsMu.RLock()
 	statusMessage := strings.TrimSpace(auth.StatusMessage)
 	nextRetryAfter := auth.NextRetryAfter
@@ -692,12 +836,21 @@ func xaiDisabledReenableAt(auth *Auth) (time.Time, bool) {
 		updatedAt = updated
 	}
 	auth.mapsMu.RUnlock()
-	if statusMessage == "" {
-		// Legacy disabled files are treated as quota-window disables.
-		statusMessage = "quota_exhausted"
+	lower := strings.ToLower(statusMessage)
+	// Parked non-Outlook accounts and accounts switched off by hand stay off.
+	if strings.Contains(lower, "non-outlook") || strings.Contains(lower, "management") {
+		return time.Time{}, false
 	}
 	if isXAINoThinkStatusMessage(statusMessage) {
 		return time.Time{}, false
+	}
+	if statusMessage == "" {
+		// Legacy Outlook files only have disabled=true. Treat those as quota-window
+		// disables. Unlabeled non-Outlook disables stay off.
+		if !outlook {
+			return time.Time{}, false
+		}
+		statusMessage = "quota_exhausted"
 	}
 	if !isXAIAutoDisabledStatusMessage(statusMessage) {
 		return time.Time{}, false

@@ -83,3 +83,25 @@ func TestReleaseOrphanAccountProxies(t *testing.T) {
 		t.Fatal("in-bucket bind should be kept")
 	}
 }
+
+func TestReleaseOrphanAccountProxiesKeepsGrok47(t *testing.T) {
+	m := NewManager(nil, &FillFirstSelector{}, nil)
+	binder := &fakeBinder{bound: map[string]string{
+		"xai-stale.json":  "socks5://warp-lb-1:1080",
+		"xai-grok47.json": "socks5://warp-lb-3:1080",
+	}}
+	m.SetAccountProxyBinder(binder)
+	if m.fillFirstGrok47 == nil {
+		t.Fatal("grok47 pool missing")
+	}
+	if !m.fillFirstGrok47.addIdle("xai-grok47.json") {
+		t.Fatal("add grok47 member")
+	}
+	m.releaseOrphanAccountProxies()
+	if _, ok := binder.bound["xai-stale.json"]; ok {
+		t.Fatal("stale bind should be released")
+	}
+	if binder.bound["xai-grok47.json"] == "" {
+		t.Fatal("grok47 bind should be kept")
+	}
+}

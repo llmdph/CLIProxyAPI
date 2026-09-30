@@ -136,6 +136,10 @@ func (s *Server) registerManagementRoutes() {
 		mgmt.PUT("/routing/strategy", s.mgmt.PutRoutingStrategy)
 		mgmt.PATCH("/routing/strategy", s.mgmt.PutRoutingStrategy)
 
+		mgmt.GET("/xai/grok-4-7-accounts", s.mgmt.GetXAIGrok47Accounts)
+		mgmt.PUT("/xai/grok-4-7-accounts", s.mgmt.PutXAIGrok47Accounts)
+		mgmt.PATCH("/xai/grok-4-7-accounts", s.mgmt.PutXAIGrok47Accounts)
+
 		mgmt.GET("/claude-api-key", s.mgmt.GetClaudeKeys)
 		mgmt.PUT("/claude-api-key", s.mgmt.PutClaudeKeys)
 		mgmt.PATCH("/claude-api-key", s.mgmt.PatchClaudeKey)

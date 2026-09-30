@@ -565,6 +565,7 @@ func (m *Manager) executeMixedOnce(ctx context.Context, providers []string, req 
 
 		models, pooled, aliasResult, routing := m.preparedExecutionModelsWithAlias(auth, routeModel)
 		if len(models) == 0 {
+			m.releaseUnusableGrok47Member(ctx, auth)
 			continue
 		}
 		attempted[auth.ID] = struct{}{}
@@ -693,7 +694,7 @@ func (m *Manager) executeMixedOnce(ctx context.Context, providers []string, req 
 				}
 				if errExec != nil {
 					result := Result{AuthID: auth.ID, Provider: provider, Model: resultModel, RouteModel: routeModel, Success: false, Error: resultErrorFromError(errExec), Options: execOpts}
-					if m.disableXAIAuthIfQuotaExhausted(execCtx, auth, provider, errExec) {
+					if m.disableXAIAuthIfAccountFailure(execCtx, auth, provider, errExec) {
 						m.MarkResult(execCtx, result)
 						if updated, ok := m.GetByID(auth.ID); ok && updated != nil && !updated.Disabled && updated.Status != StatusDisabled {
 							delete(tried, auth.ID)
@@ -823,6 +824,7 @@ func (m *Manager) executeCountMixedOnce(ctx context.Context, providers []string,
 
 		models, pooled, aliasResult, routing := m.preparedExecutionModelsWithAlias(auth, routeModel)
 		if len(models) == 0 {
+			m.releaseUnusableGrok47Member(ctx, auth)
 			continue
 		}
 		attempted[auth.ID] = struct{}{}
@@ -918,7 +920,7 @@ func (m *Manager) executeCountMixedOnce(ctx context.Context, providers []string,
 			if errCancel := claudeOAuthRequestCancellation(execCtx, auth, errExec); errCancel != nil {
 				return cliproxyexecutor.Response{}, errCancel
 			}
-			if errExec != nil && m.disableXAIAuthIfQuotaExhausted(execCtx, auth, provider, errExec) {
+			if errExec != nil && m.disableXAIAuthIfAccountFailure(execCtx, auth, provider, errExec) {
 				result := Result{AuthID: auth.ID, Provider: provider, Model: resultModel, RouteModel: routeModel, Success: false, Error: resultErrorFromError(errExec), Options: execOpts, SkipQuotaObservation: true}
 				if ra := retryAfterFromError(errExec); ra != nil {
 					result.RetryAfter = ra
@@ -1157,6 +1159,7 @@ func (m *Manager) executeStreamMixedOnce(ctx context.Context, providers []string
 			aliasResult.OriginalAlias = responseAlias
 		}
 		if len(models) == 0 {
+			m.releaseUnusableGrok47Member(ctx, auth)
 			if selection != nil {
 				homeExcludedAuthIDs[auth.ID] = struct{}{}
 				lastHomeAuthID = auth.ID
@@ -1311,7 +1314,7 @@ func (m *Manager) executeStreamMixedOnce(ctx context.Context, providers []string
 					}
 					continue
 				}
-				if m.disableXAIAuthIfQuotaExhausted(execCtx, auth, provider, errStream) {
+				if m.disableXAIAuthIfAccountFailure(execCtx, auth, provider, errStream) {
 					result := Result{AuthID: auth.ID, Provider: provider, Model: routeModel, Success: false, Error: resultErrorFromError(errStream), Options: execOpts}
 					if ra := retryAfterFromError(errStream); ra != nil {
 						result.RetryAfter = ra

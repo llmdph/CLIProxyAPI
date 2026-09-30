@@ -5,6 +5,7 @@ import (
 	"errors"
 	"net/http"
 	"strconv"
+	"strings"
 	"sync"
 	"testing"
 	"time"
@@ -351,7 +352,7 @@ func TestExecuteStreamDisablesOnQuotaExhausted(t *testing.T) {
 	}
 }
 
-func TestReenableExpiredXAIDisabledAuthsSkipsNonOutlook(t *testing.T) {
+func TestReenableExpiredXAIDisabledAuthsReenablesNonOutlookQuota(t *testing.T) {
 	t.Parallel()
 	m := NewManager(nil, nil, nil)
 	now := time.Now()
@@ -368,15 +369,57 @@ func TestReenableExpiredXAIDisabledAuthsSkipsNonOutlook(t *testing.T) {
 	if _, err := m.Register(context.Background(), auth); err != nil {
 		t.Fatalf("register: %v", err)
 	}
-	if n := m.reenableExpiredXAIDisabledAuths(context.Background(), now); n != 0 {
-		t.Fatalf("reenabled = %d, want 0", n)
+	if n := m.reenableExpiredXAIDisabledAuths(context.Background(), now); n != 1 {
+		t.Fatalf("reenabled = %d, want 1", n)
 	}
 	updated, ok := m.GetByID("xai-skip@llmdph.site")
 	if !ok || updated == nil {
 		t.Fatal("missing auth")
 	}
-	if !updated.Disabled || updated.Status != StatusDisabled {
-		t.Fatalf("non-outlook auth was re-enabled: disabled=%v status=%s", updated.Disabled, updated.Status)
+	if updated.Disabled || updated.Status != StatusActive {
+		t.Fatalf("non-outlook quota auth stayed disabled: disabled=%v status=%s", updated.Disabled, updated.Status)
+	}
+}
+
+func TestReenableExpiredXAIDisabledAuthsSkipsParkedAndManualNonOutlook(t *testing.T) {
+	t.Parallel()
+	now := time.Now()
+	parked := &Auth{
+		ID:             "xai-parked@llmdph.site",
+		Provider:       "xai",
+		Disabled:       true,
+		Status:         StatusDisabled,
+		StatusMessage:  "disabled non-outlook by operator",
+		UpdatedAt:      now.Add(-25 * time.Hour),
+		NextRetryAfter: now.Add(-time.Minute),
+		Metadata:       map[string]any{"email": "parked@llmdph.site", "type": "xai"},
+	}
+	manual := &Auth{
+		ID:             "xai-manual@llmdph.site",
+		Provider:       "xai",
+		Disabled:       true,
+		Status:         StatusDisabled,
+		StatusMessage:  "disabled via management API",
+		UpdatedAt:      now.Add(-25 * time.Hour),
+		NextRetryAfter: now.Add(-time.Minute),
+		Metadata:       map[string]any{"email": "manual@llmdph.site", "type": "xai"},
+	}
+	unlabeled := &Auth{
+		ID:        "xai-empty@llmdph.site",
+		Provider:  "xai",
+		Disabled:  true,
+		Status:    StatusDisabled,
+		UpdatedAt: now.Add(-25 * time.Hour),
+		Metadata:  map[string]any{"email": "empty@llmdph.site", "type": "xai"},
+	}
+	if _, ok := xaiDisabledReenableAt(parked); ok {
+		t.Fatal("parked non-outlook was scheduled")
+	}
+	if _, ok := xaiDisabledReenableAt(manual); ok {
+		t.Fatal("manually disabled non-outlook was scheduled")
+	}
+	if _, ok := xaiDisabledReenableAt(unlabeled); ok {
+		t.Fatal("unlabeled non-outlook disable was scheduled")
 	}
 }
 
@@ -864,5 +907,96 @@ func TestExecuteStreamSessionNameRotatesOnQuotaExhausted(t *testing.T) {
 	}
 	if kept.Disabled {
 		t.Fatal("failover auth was disabled")
+	}
+}
+
+func TestDisableAuthForQuotaExhaustedDropsGrok47Member(t *testing.T) {
+	t.Parallel()
+	m := NewManager(nil, nil, nil)
+	auth := &Auth{ID: "xai-quota-grok47", Provider: "xai", Status: StatusActive}
+	if _, err := m.Register(context.Background(), auth); err != nil {
+		t.Fatalf("register: %v", err)
+	}
+	if m.fillFirstGrok47 == nil {
+		t.Fatal("grok47 pool missing")
+	}
+	if !m.fillFirstGrok47.addAndOccupy(auth.ID) {
+		t.Fatal("occupy grok47 member")
+	}
+	m.disableAuthForQuotaExhausted(context.Background(), auth, errors.New(`{"code":"subscription:free-usage-exhausted"}`))
+	if m.fillFirstGrok47.hasMember(auth.ID) {
+		t.Fatal("quota disable left the account in the grok47 pool")
+	}
+	if m.fillFirstGrok47.inFlightHas(auth.ID) {
+		t.Fatal("quota disable left the account in flight")
+	}
+}
+
+
+func TestIsXAICredentialInvalidError(t *testing.T) {
+	t.Parallel()
+	invalid := errors.New(`Invalid or expired credentials (auth_kind=bearer, x_xai_token_auth=xai-grok-cli, upstream=Unauthenticated, reason=no auth context)`)
+	if !isXAICredentialInvalidError(invalid) {
+		t.Fatal("expected invalid credentials to match")
+	}
+	if !isXAICredentialInvalidError(errors.New(`{"code":"bad-credentials"}`)) {
+		t.Fatal("expected bad-credentials to match")
+	}
+	if isXAICredentialInvalidError(errors.New("status 401: unexpected EOF")) {
+		t.Fatal("transport 401 must not match")
+	}
+	if isXAICredentialInvalidError(errors.New(`subscription:free-usage-exhausted`)) {
+		t.Fatal("quota error must not match credential invalid")
+	}
+}
+
+func TestDisableAuthForInvalidCredentialsDropsAndStaysOff(t *testing.T) {
+	t.Parallel()
+	m := NewManager(nil, nil, nil)
+	auth := &Auth{
+		ID:       "xai-dead@llmdph.site",
+		Provider: "xai",
+		Status:   StatusActive,
+		Metadata: map[string]any{"type": "xai", "email": "dead@llmdph.site"},
+	}
+	if _, err := m.Register(context.Background(), auth); err != nil {
+		t.Fatalf("register: %v", err)
+	}
+	if m.fillFirstGrok47 == nil {
+		t.Fatal("grok47 pool missing")
+	}
+	if !m.fillFirstGrok47.addAndOccupy(auth.ID) {
+		t.Fatal("occupy grok47 member")
+	}
+	errInvalid := errors.New(`Invalid or expired credentials (auth_kind=bearer, upstream=Unauthenticated, reason=no auth context)`)
+	if !m.disableXAIAuthIfCredentialInvalid(context.Background(), auth, "xai", errInvalid) {
+		t.Fatal("expected credential disable")
+	}
+	if m.fillFirstGrok47.hasMember(auth.ID) || m.fillFirstGrok47.inFlightHas(auth.ID) {
+		t.Fatal("invalid credential stayed in the grok47 pool")
+	}
+	m.MarkResult(context.Background(), Result{
+		AuthID:   auth.ID,
+		Provider: "xai",
+		Model:    "grok-4.7-build-fast",
+		Success:  false,
+		Error:    &Error{HTTPStatus: 401, Message: errInvalid.Error()},
+	})
+	updated, ok := m.GetByID(auth.ID)
+	if !ok || updated == nil {
+		t.Fatal("missing auth")
+	}
+	if !updated.Disabled || updated.Status != StatusDisabled {
+		t.Fatalf("auth was not kept disabled: disabled=%v status=%s message=%q", updated.Disabled, updated.Status, updated.StatusMessage)
+	}
+	if !strings.Contains(updated.StatusMessage, "credentials_invalid") {
+		t.Fatalf("status message = %q", updated.StatusMessage)
+	}
+	if n := m.reenableExpiredXAIDisabledAuths(context.Background(), time.Now().Add(25*time.Hour)); n != 0 {
+		t.Fatalf("reenabled = %d, want 0", n)
+	}
+	updated, _ = m.GetByID(auth.ID)
+	if updated == nil || !updated.Disabled {
+		t.Fatal("credential failure was re-enabled")
 	}
 }

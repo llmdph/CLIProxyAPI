@@ -97,6 +97,20 @@ func (m *Manager) beginFillFirstHold(ctx context.Context, providers []string, re
 		}
 		noRetry = true
 	}
+	selectionModel := req.Model
+	if opts != nil {
+		if selected := authSelectionModelFromOptions(*opts, req.Model); strings.TrimSpace(selected) != "" {
+			selectionModel = selected
+		}
+	}
+	if isGrok47AccountPoolModel(selectionModel) && m.grok47PoolActive() {
+		if m.fillFirstGrok47 == nil {
+			m.fillFirstGrok47 = newFillFirstPool()
+		}
+		pool = m.fillFirstGrok47
+	} else if isGrok47AccountPoolModel(selectionModel) {
+		m.retireGrok47PoolIfInactive()
+	}
 	hold := &fillFirstHold{pool: pool, noRetry: noRetry}
 	ctx = context.WithValue(ctx, fillFirstHoldKey{}, hold)
 	var finishOnce sync.Once
@@ -161,6 +175,15 @@ func (m *Manager) syncFillFirstMembership(auth *Auth) {
 	}
 	id := strings.TrimSpace(auth.ID)
 	if id == "" {
+		return
+	}
+	if isOperatorParkedNonOutlook(auth) {
+		if m.fillFirst != nil {
+			m.fillFirst.drop(id)
+		}
+		if m.fillFirstDownrank != nil {
+			m.fillFirstDownrank.drop(id)
+		}
 		return
 	}
 	if isXAIDownrankAuth(auth) {
@@ -232,6 +255,9 @@ func (m *Manager) acquireFillFirstAuth(
 	}
 	if tried == nil {
 		tried = make(map[string]struct{})
+	}
+	if hold.pool == m.fillFirstGrok47 {
+		return m.acquireGrok47PolicyAuth(ctx, model, providerSet, tried, hold)
 	}
 	other := m.otherFillFirstPool(pool)
 	lostID := ""
@@ -569,12 +595,17 @@ func (m *Manager) pickRandomAvailableAuth(model string, providers map[string]str
 	if m == nil {
 		return nil, nil, "", &Error{Code: "auth_not_found", Message: "no auth available"}
 	}
+	m.retireGrok47PoolIfInactive()
 	now := time.Now()
 	marked := make([]*Auth, 0, 16)
 	unmarked := make([]*Auth, 0, 32)
+	reserveGrok47 := m.grok47PoolActive() && m.fillFirstGrok47 != nil
 	m.mu.RLock()
 	for _, auth := range m.auths {
 		if auth == nil || auth.ID == "" || auth.Disabled || auth.Status == StatusDisabled {
+			continue
+		}
+		if reserveGrok47 && m.fillFirstGrok47.hasMember(auth.ID) {
 			continue
 		}
 		if skip != nil {

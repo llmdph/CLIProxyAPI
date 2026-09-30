@@ -827,6 +827,13 @@ func isAuthBlockedForModel(auth *Auth, model string, now time.Time) (bool, block
 	if auth.Disabled || auth.Status == StatusDisabled {
 		return true, blockReasonDisabled, time.Time{}
 	}
+	return authRuntimeBlock(auth, model, now)
+}
+
+func authRuntimeBlock(auth *Auth, model string, now time.Time) (bool, blockReason, time.Time) {
+	if auth == nil {
+		return true, blockReasonOther, time.Time{}
+	}
 	if hasUnauthorizedAuthFailure(auth) {
 		return true, blockReasonOther, time.Time{}
 	}

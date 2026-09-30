@@ -67,6 +67,11 @@ func (m *Manager) releaseOrphanAccountProxies() {
 			keep[id] = struct{}{}
 		}
 	}
+	if m.fillFirstGrok47 != nil {
+		for _, id := range m.fillFirstGrok47.memberIDs() {
+			keep[id] = struct{}{}
+		}
+	}
 	m.mu.RLock()
 	binder := m.accountBinder
 	filtered := map[string]struct{}{}

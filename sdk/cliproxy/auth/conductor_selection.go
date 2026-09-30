@@ -2152,6 +2152,9 @@ func (m *Manager) pickNextMixed(ctx context.Context, providers []string, model s
 	if hold := fillFirstHoldFrom(ctx); hold != nil && m.fillFirstEnabled() {
 		return m.acquireFillFirstAuth(ctx, providers, model, tried, hold)
 	}
+	if m.grok47PoolActive() && isGrok47AccountPoolModel(model) && providersIncludeXAI(providers) {
+		return m.pickGrok47AvailableAuth(model, providerSetFromList(providers), tried)
+	}
 	opts.Metadata[cliproxyexecutor.SessionAffinityProviderMetadataKey] = "mixed"
 	opts.Metadata[cliproxyexecutor.SessionAffinityModelMetadataKey] = model
 

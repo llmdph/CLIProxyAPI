@@ -142,6 +142,17 @@ type CodexHeaderDefaults struct {
 	BetaFeatures string `yaml:"beta-features" json:"beta-features"`
 }
 
+const (
+	// Grok47AccountsOutlookClean is the default: Outlook accounts that are not degraded.
+	Grok47AccountsOutlookClean = "outlook-clean"
+	// Grok47AccountsOutlookAll allows every Outlook account, including degraded ones.
+	Grok47AccountsOutlookAll = "outlook-all"
+	// Grok47AccountsNonOutlook allows only non-Outlook accounts.
+	Grok47AccountsNonOutlook = "non-outlook"
+	// Grok47AccountsAll allows every mailbox, including degraded ones.
+	Grok47AccountsAll = "all"
+)
+
 // XAIConfig configures provider-wide xAI request behavior.
 type XAIConfig struct {
 	// InjectXSearch injects xAI's native x_search tool when the request does not declare it.
@@ -149,6 +160,9 @@ type XAIConfig struct {
 	// EnableConsole allows switching a Build account onto Console after quota.
 	// Omitted defaults to true.
 	EnableConsole *bool `yaml:"enable-console" json:"enable-console"`
+	// Grok47Accounts chooses which accounts grok-4.7 and grok-4.7-build-fast may use.
+	// Empty means outlook-clean. Allowed: outlook-clean, outlook-all, non-outlook, all.
+	Grok47Accounts string `yaml:"grok-4-7-accounts,omitempty" json:"grok-4-7-accounts,omitempty"`
 }
 
 // ConsoleEnabled reports whether Console may be used. Default true when unset.
@@ -157,6 +171,29 @@ func (c XAIConfig) ConsoleEnabled() bool {
 		return true
 	}
 	return *c.EnableConsole
+}
+
+// NormalizeGrok47Accounts canonicalizes the grok-4.7 account switch.
+// Empty input becomes outlook-clean. Unknown non-empty values return false.
+func NormalizeGrok47Accounts(raw string) (string, bool) {
+	switch strings.ToLower(strings.TrimSpace(raw)) {
+	case "", Grok47AccountsOutlookClean, "outlook_clean":
+		return Grok47AccountsOutlookClean, true
+	case Grok47AccountsOutlookAll, "outlook_all":
+		return Grok47AccountsOutlookAll, true
+	case Grok47AccountsNonOutlook, "non_outlook", "nonoutlook":
+		return Grok47AccountsNonOutlook, true
+	case Grok47AccountsAll:
+		return Grok47AccountsAll, true
+	default:
+		return Grok47AccountsOutlookClean, false
+	}
+}
+
+// Grok47AccountPool is the normalized grok-4.7 account switch. Empty means outlook-clean.
+func (c XAIConfig) Grok47AccountPool() string {
+	mode, _ := NormalizeGrok47Accounts(c.Grok47Accounts)
+	return mode
 }
 
 // DevinConfig configures provider-wide Devin request behavior.
