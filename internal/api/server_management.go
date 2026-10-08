@@ -274,7 +274,8 @@ func (s *Server) pluginManagementNoRoute(c *gin.Context) {
 		s.pluginResourceNoRoute(c)
 		return
 	}
-	if path != "/v0/management" && !strings.HasPrefix(path, "/v0/management/") {
+	dispatchPath, ok := managementPluginDispatchPath(path)
+	if !ok {
 		c.AbortWithStatus(http.StatusNotFound)
 		return
 	}
@@ -289,15 +290,31 @@ func (s *Server) pluginManagementNoRoute(c *gin.Context) {
 	if c.IsAborted() {
 		return
 	}
+	origPath := c.Request.URL.Path
+	c.Request.URL.Path = dispatchPath
 	if s.mgmt.ServePluginAuthURL(c) {
+		c.Request.URL.Path = origPath
 		c.Abort()
 		return
 	}
 	if s.pluginHost.ServeManagementHTTP(c.Writer, c.Request) {
+		c.Request.URL.Path = origPath
 		c.Abort()
 		return
 	}
+	c.Request.URL.Path = origPath
 	c.AbortWithStatus(http.StatusNotFound)
+}
+
+func managementPluginDispatchPath(path string) (string, bool) {
+	switch {
+	case path == "/v0/management" || strings.HasPrefix(path, "/v0/management/"):
+		return path, true
+	case strings.HasPrefix(path, "/v8/management/"):
+		return "/v0/management/" + strings.TrimPrefix(path, "/v8/management/"), true
+	default:
+		return "", false
+	}
 }
 
 func (s *Server) pluginResourceNoRoute(c *gin.Context) {

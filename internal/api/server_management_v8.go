@@ -53,6 +53,18 @@ func (s *Server) registerManagementV8Routes() {
 	v8.GET("/oauth/status", s.mgmt.GetAuthStatus)
 	v8.DELETE("/oauth/session", s.mgmt.CancelAuthSession)
 
+	// Local custom APIs kept on the v8 prefix so the management panel can reach them.
+	v8.GET("/llm-request-logs", s.mgmt.GetLLMRequestLogs)
+	v8.DELETE("/llm-request-logs", s.mgmt.ClearLLMRequestLogs)
+	v8.GET("/auth-files/think-probe", s.mgmt.GetAuthFilesThinkProbe)
+	v8.POST("/auth-files/think-probe", s.mgmt.PostAuthFilesThinkProbe)
+	v8.GET("/xai/grok-4-7-accounts", s.mgmt.GetXAIGrok47Accounts)
+	v8.PUT("/xai/grok-4-7-accounts", s.mgmt.PutXAIGrok47Accounts)
+	v8.PATCH("/xai/grok-4-7-accounts", s.mgmt.PutXAIGrok47Accounts)
+	v8.GET("/request-log", s.mgmt.GetRequestLog)
+	v8.PUT("/request-log", s.mgmt.PutRequestLog)
+	v8.PATCH("/request-log", s.mgmt.PutRequestLog)
+
 	v8.GET("/plugins", s.mgmt.ListPlugins)
 	v8.DELETE("/plugins/:id", s.mgmt.DeletePlugin)
 	v8.GET("/plugins/store", s.mgmt.ListPluginStore)

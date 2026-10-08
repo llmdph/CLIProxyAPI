@@ -93,6 +93,9 @@ func TestManagementV8IndependentContract(t *testing.T) {
 		"POST /v8/management/routing/cooldown/reset",
 		"GET /v8/management/plugins/:id/quota", "POST /v8/management/plugins/:id/quota", "DELETE /v8/management/plugins/:id/quota",
 		"POST /v8/management/plugins/store/:id/install", "DELETE /v8/management/plugins/:id",
+		"GET /v8/management/llm-request-logs", "DELETE /v8/management/llm-request-logs",
+		"GET /v8/management/auth-files/think-probe", "POST /v8/management/auth-files/think-probe",
+		"GET /v8/management/xai/grok-4-7-accounts",
 	} {
 		if !routes[route] {
 			t.Errorf("missing route %s", route)
