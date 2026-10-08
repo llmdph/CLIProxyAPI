@@ -316,9 +316,33 @@ func logXAIResolvedBaseURL(ctx context.Context, baseURL string) {
 	helps.LogWithRequestID(ctx).Infof("xai: using base_url=%s source=%s", baseURL, xaiBaseURLSource(baseURL))
 }
 
+func sanitizeXAIChatProxyHeaders(r *http.Request) {
+	if r == nil {
+		return
+	}
+	activeVer := xaiClientVersion()
+	if !helps.AcceptableXAIClientVersion(activeVer) {
+		activeVer = helps.DefaultXAIFallbackClientVersion
+	}
+	curVer := r.Header.Get(xaiClientVersionHeader)
+	if curVer == "" || !helps.AcceptableXAIClientVersion(curVer) {
+		r.Header.Set(xaiClientVersionHeader, activeVer)
+	}
+	ua := r.Header.Get("User-Agent")
+	if ua == "" || strings.Contains(ua, "0.2.") || strings.Contains(ua, "grok-pager") || !strings.Contains(ua, activeVer) {
+		r.Header.Set("User-Agent", "xai-grok-workspace/"+activeVer)
+	}
+	if clientIdent := r.Header.Get(xaiClientIdentifierHeader); clientIdent == "" || clientIdent == "grok-pager" {
+		r.Header.Set(xaiClientIdentifierHeader, xaiClientIdentifierValue)
+	}
+}
+
 func applyXAIHeaders(r *http.Request, auth *cliproxyauth.Auth, token string, stream bool, sessionID string, clientHeaders ...http.Header) {
 	applyXAIDefaultHeaders(r, token, stream, sessionID)
 	applyXAICustomHeaders(r, auth, clientHeaders...)
+	if xaiIsCLIChatProxyBaseURL(xaiChatBaseURL(auth)) {
+		sanitizeXAIChatProxyHeaders(r)
+	}
 }
 
 func applyXAIDefaultHeaders(r *http.Request, token string, stream bool, sessionID string) {
@@ -374,6 +398,9 @@ func applyXAIChatHeaders(r *http.Request, auth *cliproxyauth.Auth, token string,
 		}
 	}
 	applyXAICustomHeaders(r, auth, clientHeaders...)
+	if xaiIsCLIChatProxyBaseURL(xaiChatBaseURL(auth)) {
+		sanitizeXAIChatProxyHeaders(r)
+	}
 }
 
 func xaiResolveComposerSessionID(ctx context.Context, req cliproxyexecutor.Request, opts cliproxyexecutor.Options, baseModel string) (string, error) {

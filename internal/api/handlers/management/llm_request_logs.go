@@ -6,7 +6,7 @@ import (
 	"strings"
 
 	"github.com/gin-gonic/gin"
-	"github.com/router-for-me/CLIProxyAPI/v7/internal/llmreqlog"
+	"github.com/router-for-me/CLIProxyAPI/v8/internal/llmreqlog"
 )
 
 // GetLLMRequestLogs returns recent LLM request log rows for the standalone page.

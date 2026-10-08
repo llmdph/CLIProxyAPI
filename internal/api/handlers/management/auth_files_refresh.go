@@ -5,11 +5,16 @@ import (
 	"strings"
 
 	"github.com/gin-gonic/gin"
-	coreauth "github.com/router-for-me/CLIProxyAPI/v7/sdk/cliproxy/auth"
+	coreauth "github.com/router-for-me/CLIProxyAPI/v8/sdk/cliproxy/auth"
 )
 
 // PostAuthFilesRefresh refreshes OAuth access tokens for one or more auth files.
 // Body: {"name":"..."} or {"names":["..."]} and optional "auth_index".
+// RefreshAuthFiles is an alias for PostAuthFilesRefresh.
+func (h *Handler) RefreshAuthFiles(c *gin.Context) {
+	h.PostAuthFilesRefresh(c)
+}
+
 func (h *Handler) PostAuthFilesRefresh(c *gin.Context) {
 	if h.authManager == nil {
 		c.JSON(http.StatusServiceUnavailable, gin.H{"error": "core auth manager unavailable"})

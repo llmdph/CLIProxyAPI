@@ -10,14 +10,15 @@ import (
 	"time"
 
 	"github.com/gin-gonic/gin"
-	coreauth "github.com/router-for-me/CLIProxyAPI/v7/sdk/cliproxy/auth"
+	helps "github.com/router-for-me/CLIProxyAPI/v8/internal/runtime/executor/helps"
+	coreauth "github.com/router-for-me/CLIProxyAPI/v8/sdk/cliproxy/auth"
 	log "github.com/sirupsen/logrus"
 )
 
 const (
 	thinkProbeModel       = "grok-4.6"
 	thinkProbeURL         = "https://cli-chat-proxy.grok.com/v1/responses"
-	thinkProbeClientVer   = "0.2.93"
+	thinkProbeClientVer   = helps.DefaultXAIFallbackClientVersion
 	thinkProbeHTTPTimeout = 25 * time.Second
 	thinkProbeDefaultN    = 4
 	thinkProbeMaxWorkers  = 8
@@ -295,9 +296,13 @@ func (h *Handler) doThinkProbeRequest(ctx context.Context, auth *coreauth.Auth) 
 	req.Header.Set("Authorization", "Bearer "+token)
 	req.Header.Set("Accept", "application/json")
 	req.Header.Set("Content-Type", "application/json")
+	clientVer := helps.GetXAIClientVersion()
+	if !helps.AcceptableXAIClientVersion(clientVer) {
+		clientVer = helps.DefaultXAIFallbackClientVersion
+	}
 	req.Header.Set("X-XAI-Token-Auth", "xai-grok-cli")
-	req.Header.Set("x-grok-client-version", thinkProbeClientVer)
-	req.Header.Set("User-Agent", "xai-grok-workspace/"+thinkProbeClientVer)
+	req.Header.Set("x-grok-client-version", clientVer)
+	req.Header.Set("User-Agent", "xai-grok-workspace/"+clientVer)
 
 	client := &http.Client{
 		Timeout:   thinkProbeHTTPTimeout,

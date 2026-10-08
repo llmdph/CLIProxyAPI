@@ -3069,20 +3069,18 @@ func TestXAIExecutorThinkingPayloadOverride(t *testing.T) {
 		thinking    *registry.ThinkingSupport
 		wantEffort  string
 	}{
-		{name: "grok-4.5", model: "grok-4.5", want: true},
-		{name: "grok-4.6", model: "grok-4.6", want: true},
-		{name: "grok-4.6 with xhigh suffix", model: "grok-4.6(xhigh)", want: true},
-		{name: "grok-4.5 with suffix", model: "grok-4.5(high)", want: true},
-		{name: "grok-4.3", model: "grok-4.3", want: true},
-		{name: "grok-3-mini", model: "grok-3-mini", want: true},
-		{name: "grok-3-mini-fast", model: "grok-3-mini-fast", want: true},
-		{name: "grok-4.20-multi-agent", model: "grok-4.20-multi-agent-0309", want: true},
-		{name: "provider-prefixed grok-4.5", model: "xai/grok-4.5", want: true},
-		{name: "legacy grok-4", model: "grok-4", want: false},
-		{name: "composer without thinking metadata", model: "grok-composer-2.5-fast", want: false},
-		{name: "non-reasoning 4.20", model: "grok-4.20-0309-non-reasoning", want: false},
-		{name: "unknown model", model: "unknown-xai-model", want: false},
-		{name: "empty model", model: "", want: false},
+		{
+			name: "home expands thinking levels", model: remoteModel,
+			metadataKey: "cliproxy.resolved_home_model_info", thinking: levels, wantEffort: "high",
+		},
+		{
+			name: "home restricts thinking levels", model: "grok-4.5",
+			metadataKey: "cliproxy.resolved_home_model_info", thinking: &registry.ThinkingSupport{Levels: []string{"low"}}, wantEffort: "low",
+		},
+		{name: "local supported fallback", model: "grok-4.5", wantEffort: "high"},
+		{name: "local unsupported fallback", model: "grok-build-0.1"},
+		{name: "local unknown fallback", model: remoteModel, wantEffort: "high"},
+		{name: "model suffix", model: "grok-4.5", suffix: "(low)", wantEffort: "low"},
 	}
 	for _, tt := range tests {
 		for _, override := range []bool{false, true} {

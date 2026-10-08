@@ -174,6 +174,16 @@ func xaiVersionHTTPClient() *http.Client {
 	return NewProxyAwareHTTPClient(context.Background(), &config.Config{SDKConfig: config.SDKConfig{ProxyURL: proxyURL}}, nil, XAIVersionFetchTimeout)
 }
 
+// AcceptableXAIClientVersion reports whether a version meets the strict semver and minimum server version floor.
+func AcceptableXAIClientVersion(version string) bool {
+	return acceptableXAIClientVersion(version)
+}
+
+// XAIVersionAtLeast compares dotted numeric version strings.
+func XAIVersionAtLeast(got, floor string) bool {
+	return xaiVersionAtLeast(got, floor)
+}
+
 func acceptableXAIClientVersion(version string) bool {
 	if !isStrictXAISemver(version) {
 		return false

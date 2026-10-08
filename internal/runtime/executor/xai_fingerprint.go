@@ -11,7 +11,7 @@ import (
 
 	"github.com/google/uuid"
 
-	"github.com/router-for-me/CLIProxyAPI/v7/internal/runtime/executor/helps"
+	"github.com/router-for-me/CLIProxyAPI/v8/internal/runtime/executor/helps"
 )
 
 // xaiClientIdentity is a synthetic Grok CLI machine profile. Official chat-proxy
@@ -77,7 +77,10 @@ var xaiIdentityByAuth sync.Map // map[string]xaiClientIdentity
 
 func newXAIClientIdentity() xaiClientIdentity {
 	platform := pickXAIUAPlatform()
-	version := xaiClientVersionValue
+	version := xaiClientVersion()
+	if !helps.AcceptableXAIClientVersion(version) {
+		version = helps.DefaultXAIFallbackClientVersion
+	}
 	traceID := randomHex(16)
 	spanID := randomHex(8)
 	return xaiClientIdentity{
@@ -124,6 +127,11 @@ func refreshXAIRequestScopedIdentity(identity xaiClientIdentity) xaiClientIdenti
 	spanID := randomHex(8)
 	identity.TraceParent = "00-" + traceID + "-" + spanID + "-01"
 	identity.TraceState = ""
+	currVersion := xaiClientVersion()
+	if helps.AcceptableXAIClientVersion(currVersion) && (!helps.AcceptableXAIClientVersion(identity.ClientVersion) || identity.ClientVersion != currVersion) {
+		identity.ClientVersion = currVersion
+		identity.UserAgent = fmt.Sprintf("grok-shell/%s (%s; %s)", currVersion, identity.OS, identity.Arch)
+	}
 	return identity
 }
 
