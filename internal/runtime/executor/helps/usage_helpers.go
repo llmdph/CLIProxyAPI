@@ -88,6 +88,13 @@ func NewExecutorUsageReporter(ctx context.Context, executor usageExecutor, model
 
 func NewUsageReporter(ctx context.Context, provider, model string, auth *cliproxyauth.Auth) *UsageReporter {
 	apiKey := APIKeyFromContext(ctx)
+	accessProvider := AccessProviderFromContext(ctx)
+	isNativeKey := false
+	if nativeExplicit, ok := usage.IsNativeKeyFromContext(ctx); ok {
+		isNativeKey = nativeExplicit
+	} else if accessProvider != "" {
+		isNativeKey = usage.IsNativeAccessProvider(accessProvider)
+	}
 	alias := usage.RequestedModelAliasFromContext(ctx)
 	if alias == "" {
 		alias = model
@@ -126,6 +133,8 @@ func NewUsageReporter(ctx context.Context, provider, model string, auth *cliprox
 		alias:           strings.TrimSpace(alias),
 		requestedAt:     time.Now(),
 		apiKey:          apiKey,
+		accessProvider:  accessProvider,
+		isNativeKey:     isNativeKey,
 		sessionID:       sessionID,
 		parentSessionID: parentSessionID,
 		source:          resolveUsageSource(auth, apiKey),
@@ -340,11 +349,34 @@ func (r *UsageReporter) PublishAdditionalModel(ctx context.Context, model string
 	r.publishRecord(ctx, record)
 }
 
-func (r *UsageReporter) SetTranslatedReasoningEffort(payload []byte, format string) {
+// SetTranslatedRequestMetadata captures usage-relevant values from the final
+// outbound payload after translation and payload defaults or overrides.
+func (r *UsageReporter) SetTranslatedRequestMetadata(payload []byte, format string) {
 	if r == nil {
 		return
 	}
 	r.reasoning = thinking.ExtractTranslatedReasoningEffort(payload, format)
+	r.effectiveServiceTier = extractEffectiveServiceTier(payload)
+}
+
+// SetTranslatedReasoningEffort is retained for existing executor call sites.
+// It captures all post-translation request metadata used by usage records.
+func (r *UsageReporter) SetTranslatedReasoningEffort(payload []byte, format string) {
+	r.SetTranslatedRequestMetadata(payload, format)
+}
+
+func extractEffectiveServiceTier(payload []byte) string {
+	if len(payload) == 0 || !gjson.ValidBytes(payload) {
+		return ""
+	}
+	for _, path := range []string{"service_tier", "request.service_tier", "interaction.service_tier"} {
+		if node := gjson.GetBytes(payload, path); node.Type == gjson.String {
+			if tier := strings.TrimSpace(node.String()); tier != "" {
+				return tier
+			}
+		}
+	}
+	return ""
 }
 
 func (r *UsageReporter) TrackHTTPClient(client *http.Client) *http.Client {
@@ -596,6 +628,22 @@ func (r *UsageReporter) TraceID() string {
 	return r.traceID
 }
 
+// IsNativeKey reports whether the client API key was authenticated by CPA's native config provider.
+func (r *UsageReporter) IsNativeKey() bool {
+	if r == nil {
+		return false
+	}
+	return r.isNativeKey
+}
+
+// AccessProvider identifies the client request authentication provider.
+func (r *UsageReporter) AccessProvider() string {
+	if r == nil {
+		return ""
+	}
+	return r.accessProvider
+}
+
 func (r *UsageReporter) buildRecord(detail usage.Detail, failed bool, failures ...usage.Failure) usage.Record {
 	var fail usage.Failure
 	if len(failures) > 0 {
@@ -773,6 +821,31 @@ func APIKeyFromContext(ctx context.Context) string {
 			return value.String()
 		default:
 			return fmt.Sprintf("%v", value)
+		}
+	}
+	return ""
+}
+
+// AccessProviderFromContext extracts the client authentication provider identifier from the context.
+func AccessProviderFromContext(ctx context.Context) string {
+	if provider := usage.AccessProviderFromContext(ctx); provider != "" {
+		return provider
+	}
+	if ctx == nil {
+		return ""
+	}
+	ginCtx, ok := ctx.Value("gin").(*gin.Context)
+	if !ok || ginCtx == nil {
+		return ""
+	}
+	if v, exists := ginCtx.Get("accessProvider"); exists {
+		switch value := v.(type) {
+		case string:
+			return strings.TrimSpace(value)
+		case fmt.Stringer:
+			return strings.TrimSpace(value.String())
+		default:
+			return strings.TrimSpace(fmt.Sprintf("%v", value))
 		}
 	}
 	return ""
@@ -1004,7 +1077,8 @@ func hasOpenAIStyleUsageBucketFields(usageNode gjson.Result) bool {
 		usageNode.Get("input_tokens_details.cache_write_tokens").Exists() ||
 		usageNode.Get("input_tokens_details.cache_creation_tokens").Exists() ||
 		usageNode.Get("completion_tokens_details.reasoning_tokens").Exists() ||
-		usageNode.Get("output_tokens_details.reasoning_tokens").Exists()
+		usageNode.Get("output_tokens_details.reasoning_tokens").Exists() ||
+		usageNode.Get("reasoning_tokens").Exists()
 }
 
 func parseOpenAIStyleUsageNode(usageNode gjson.Result) usage.Detail {
@@ -1042,6 +1116,10 @@ func parseOpenAIStyleUsageNode(usageNode gjson.Result) usage.Detail {
 	reasoning := usageNode.Get("completion_tokens_details.reasoning_tokens")
 	if !reasoning.Exists() {
 		reasoning = usageNode.Get("output_tokens_details.reasoning_tokens")
+	}
+	if !reasoning.Exists() {
+		// Flat dialect (e.g. SGLang): usage.reasoning_tokens at top level.
+		reasoning = usageNode.Get("reasoning_tokens")
 	}
 	if reasoning.Exists() {
 		detail.ReasoningTokens = reasoning.Int()
@@ -1158,6 +1236,13 @@ func parseClaudeUsageNode(usageNode gjson.Result) usage.Detail {
 		CachedTokens:        cacheReadTokens,
 		CacheReadTokens:     cacheReadTokens,
 		CacheCreationTokens: cacheCreationTokens,
+	}
+	// Anthropic reports the speed a response was served and billed at in
+	// usage.speed ("fast" or "standard"): fast mode costs more, and a
+	// fast request on a model without it runs, and is billed, at standard.
+	// Carried as the response tier so usage sinks can price it.
+	if speed := strings.TrimSpace(usageNode.Get("speed").String()); speed != "" {
+		detail.ResponseServiceTier = speed
 	}
 	if detail.CachedTokens == 0 {
 		detail.CachedTokens = detail.CacheCreationTokens
