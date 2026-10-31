@@ -1,0 +1,162 @@
+routing:
+    strategy: "fill-first"
+    session-affinity: false
+    cooldown:
+        disable-cooling: false
+    retry:
+        request-retry: 3
+        max-retry-credentials: 0
+        max-retry-interval: 30
+plugins:
+    enabled: true
+    configs:
+        antigravity-coding-filter:
+            enabled: true
+            store:
+                id: antigravity-coding-filter
+                name: Antigravity Coding Filter
+                description: Intercept requests from mainstream programming software, especially reverse-engineering-related requests from Google Antigravity, to prevent account bans.
+                author: jellyfish-p
+                version: 0.2.0
+                release-tag: v0.2.0
+                repository: https://github.com/jellyfish-p/cpa-plugin-antigravity-coding-filter
+                homepage: https://github.com/jellyfish-p/cpa-plugin-antigravity-coding-filter
+                license: MIT
+                tags:
+                    - Interceptor
+                source-id: official
+                source-name: Official
+                source-url: https://raw.githubusercontent.com/router-for-me/CLIProxyAPI-Plugins-Store/main/registry.json
+                install:
+                    type: github-release
+        grok-inspection:
+            enabled: true
+            store:
+                id: grok-inspection
+                name: Grok Inspection
+                description: Background xAI/Grok account inspection for CPA, with permission, quota, login, and health classification; supports full/incremental/classify-scoped re-inspect and bulk actions.
+                author: ywddd
+                version: 0.1.28
+                release-tag: v0.1.28
+                repository: https://github.com/ywddd/grok-inspection
+                homepage: https://github.com/ywddd/grok-inspection
+                license: MIT
+                tags:
+                    - Management
+                    - Grok
+                    - xAI
+                source-id: official
+                source-name: Official
+                source-url: https://raw.githubusercontent.com/router-for-me/CLIProxyAPI-Plugins-Store/main/registry.json
+                install:
+                    type: github-release
+        grok2api-egress:
+            enabled: false
+            store:
+                id: grok2api-egress
+                name: Grok Egress Guard
+                description: CPA-native Grok/xAI egress node management with sticky proxy binding, passive and active quality probes, quarantine migration, and a management dashboard for degraded-output recovery.
+                author: lij768423-svg
+                version: 1.0.8
+                release-tag: v1.0.8
+                repository: https://github.com/lij768423-svg/grok2api-egress-enhancements
+                homepage: https://github.com/lij768423-svg/grok2api-egress-enhancements/tree/main/cpa-plugin
+                license: MIT
+                tags:
+                    - Management
+                    - Usage
+                    - Grok
+                    - xAI
+                    - Egress
+                    - Proxy
+                    - Quality
+                source-id: official
+                source-name: Official
+                source-url: https://raw.githubusercontent.com/router-for-me/CLIProxyAPI-Plugins-Store/main/registry.json
+                install:
+                    type: github-release
+requests:
+    proxy-url: "socks5://warp-lb:1080"
+access:
+    api-keys:
+        - "sk-replace-me"
+server:
+    host: ""
+    port: 8317
+    trusted-proxies:
+        - 127.0.0.1
+        - ::1
+        - 172.16.0.0/12
+    tls:
+        enable: false
+        cert: ""
+        key: ""
+    discovery:
+        service-type: _ai-gateway._tcp
+        subtypes:
+            - _chat-completions
+            - _responses
+            - _messages
+            - _generate-content
+            - _interactions
+credentials:
+    concurrency:
+        cpa-heartbeat-timeout: 3s
+        cpa-cancel-bound: 5s
+        reclaim-grace: 5s
+        cleanup-interval: 5s
+        release-flush-interval: 250ms
+        release-max-backoff: 2s
+        busy-retry-min: 250ms
+        busy-retry-max: 1s
+        max-limit: 1000000
+    in-flight:
+        snapshot-interval: 2s
+        stale-after: 10s
+        max-part-bytes: 262144
+        max-part-count: 64
+        max-revision-bytes: 16777216
+        max-aggregate-groups: 100000
+        max-details: 10000
+        max-string-bytes: 256
+        staging-retention: 1m
+management:
+    allow-remote: true
+    secret-key: "replace-with-management-secret"
+    disable-control-panel: false
+    disable-auto-update-panel: true
+    panel-github-repository: "https://github.com/llmdph/Cli-Proxy-API-Management-Center"
+oauth:
+    auth-dir: "/root/.cli-proxy-api"
+    providers:
+        aistudio:
+            ws-auth: true
+        antigravity:
+            sensitive-words:
+                - x-anthropic-billing-header
+                - Claude Code
+                - Claude Agent SDK
+                - Hermes Agent
+                - Nous Research
+                - system-conventions
+                - system_conventions
+                - system-directive
+                - system_directive
+                - "RFC 2119: MUST, REQUIRED, SHOULD, RECOMMENDED, MAY, OPTIONAL."
+                - codex
+                - Codex
+observability:
+    logs:
+        debug: true
+        logging-to-file: true
+        logs-max-total-size-mb: 512
+    usage:
+        usage-statistics-enabled: true
+        redis-usage-queue-retention-seconds: 60
+upstream:
+    xai:
+        enable-console: true
+        grok-4-7-accounts: outlook-clean
+config-version: 8
+# Uncomment after bootstrap prints the warp_lb_net gateway. 217 used 172.19.0.1.
+# warp-rotate-url: "http://GATEWAY:8199"
