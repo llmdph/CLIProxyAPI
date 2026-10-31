@@ -271,6 +271,10 @@ func (m *Manager) finishAuthUpdate(ctx context.Context, committed *Auth, persist
 	}
 	m.structuralEpoch.Add(1)
 	m.queueRefreshReschedule(committed.ID)
+	if !strings.EqualFold(strings.TrimSpace(committed.Provider), "meta") {
+		_ = m.persist(ctx, committed)
+	}
+	m.syncFillFirstMembership(committed)
 	m.hook.OnAuthUpdated(ctx, committed.Clone())
 	if persistCooldown {
 		m.persistCooldownStates(context.Background())
@@ -509,24 +513,8 @@ func (m *Manager) updateInternalLocked(ctx context.Context, base, auth *Auth, mo
 		schedulerSnapshot = authClone.Clone()
 	}
 	m.mu.Unlock()
-	releaseMutation()
-	if !shouldDeferAPIKeyModelAliasRebuild(ctx) {
-		m.rebuildAPIKeyModelAliasFromRuntimeConfig()
-	}
-	if m.scheduler != nil {
-		m.scheduler.upsertAuth(schedulerSnapshot)
-	}
-	m.structuralEpoch.Add(1)
-	m.queueRefreshReschedule(auth.ID)
-	if !persistMetaMint {
-		_ = m.persist(ctx, auth)
-	}
-	m.syncFillFirstMembership(authClone)
-	m.hook.OnAuthUpdated(ctx, auth.Clone())
-	if cooldownStateChanged {
-		m.persistCooldownStates(context.Background())
-	}
-	return auth.Clone(), nil
+	_ = schedulerSnapshot
+	return auth.Clone(), true, cooldownStateChanged, nil
 }
 
 // Remove deletes an auth from runtime state without persisting.

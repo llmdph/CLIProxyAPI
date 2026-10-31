@@ -48,6 +48,9 @@ type UsageReporter struct {
 	proxyURL            string
 	reasoning           string
 	serviceTier         string
+	accessProvider       string
+	isNativeKey          bool
+	effectiveServiceTier string
 	generate            bool
 	stream              bool
 	requestedAt         time.Time

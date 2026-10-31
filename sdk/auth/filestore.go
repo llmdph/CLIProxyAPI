@@ -114,25 +114,13 @@ func (s *FileTokenStore) Save(ctx context.Context, auth *cliproxyauth.Auth) (str
 		if errCodex != nil {
 			return "", errCodex
 		}
-		cliproxyauth.SyncXAIAutoDisableMetadataForPersist(auth)
-		auth.Metadata["disabled"] = auth.Disabled
-		if setter, ok := auth.Storage.(metadataSetter); ok {
-			setter.SetMetadata(auth.Metadata)
-		}
-		if err = auth.Storage.SaveTokenToFile(path); err != nil {
-			return "", err
-		}
-	case auth.Metadata != nil:
-		cliproxyauth.SyncXAIAutoDisableMetadataForPersist(auth)
-		auth.Metadata["disabled"] = auth.Disabled
-		raw, errMarshal := json.Marshal(auth.Metadata)
-		if errMarshal != nil {
-			return "", fmt.Errorf("auth filestore: marshal metadata failed: %w", errMarshal)
-		}
-		if existing, errRead := os.ReadFile(path); errRead == nil {
-			if jsonEqual(existing, raw) {
-				break
+	} else {
+		switch {
+		case auth.Storage != nil:
+			if auth.Metadata == nil {
+				auth.Metadata = make(map[string]any)
 			}
+			cliproxyauth.SyncXAIAutoDisableMetadataForPersist(auth)
 			auth.Metadata["disabled"] = auth.Disabled
 			if setter, ok := auth.Storage.(metadataSetter); ok {
 				setter.SetMetadata(auth.Metadata)
@@ -141,6 +129,7 @@ func (s *FileTokenStore) Save(ctx context.Context, auth *cliproxyauth.Auth) (str
 				return "", err
 			}
 		case auth.Metadata != nil:
+			cliproxyauth.SyncXAIAutoDisableMetadataForPersist(auth)
 			auth.Metadata["disabled"] = auth.Disabled
 			raw, errMarshal := json.Marshal(auth.Metadata)
 			if errMarshal != nil {

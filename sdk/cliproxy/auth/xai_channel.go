@@ -26,11 +26,11 @@ const (
 	XAIChannelBuild   = "build"
 	XAIChannelConsole = "console"
 
-	xaiChannelKey                 = "xai_channel"
-	xaiConsoleQuotaExhaustedKey   = "console_quota_exhausted"
-	xaiBuildQuotaRetryAfterKey    = "build_quota_retry_after"
-	xaiConsoleSSOKey              = "sso"
-	xaiConsoleSSOTokenKey         = "console_sso_token"
+	xaiChannelKey               = "xai_channel"
+	xaiConsoleQuotaExhaustedKey = "console_quota_exhausted"
+	xaiBuildQuotaRetryAfterKey  = "build_quota_retry_after"
+	xaiConsoleSSOKey            = "sso"
+	xaiConsoleSSOTokenKey       = "console_sso_token"
 )
 
 // XAIConsoleSSO returns the Console SSO token stored on a Build auth file.
@@ -52,6 +52,9 @@ func XAIHasConsoleChannel(auth *Auth) bool {
 		return false
 	}
 	if auth == nil || !isXAIProvider(auth.Provider) {
+		return false
+	}
+	if merged, known := xaiConsoleCursorMergedState(auth); known && !merged {
 		return false
 	}
 	if XAIConsoleQuotaExhausted(auth) {

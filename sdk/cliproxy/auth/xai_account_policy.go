@@ -189,7 +189,7 @@ func (m *Manager) disableAuthForQuotaExhausted(ctx context.Context, auth *Auth, 
 	detail := xaiQuotaDetail(err)
 	usingConsole := XAIUsingConsoleChannel(clone)
 
-	if !usingConsole && XAIHasConsoleChannel(clone) {
+	if !usingConsole && XAIHasConsoleChannel(clone) && m.allowXAIConsoleSwitch(ctx, clone) {
 		setXAIChannel(clone, XAIChannelConsole)
 		setXAIBuildQuotaRetryAfter(clone, now.Add(xaiDisabledAutoReenableAfter))
 		clone.Disabled = false

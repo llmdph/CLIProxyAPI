@@ -126,6 +126,12 @@ type Auth struct {
 
 	recentRequests recentRequestRing `json:"-"`
 	indexAssigned  bool              `json:"-"`
+	// fileSnapshotPath and fileSnapshotDigest bind an unversioned file-synthesized
+	// Auth snapshot to the source file observation it was parsed from. They are
+	// runtime-only and cleared once the snapshot is committed or compared.
+	fileSnapshotPath   string `json:"-"`
+	fileSnapshotDigest string `json:"-"`
+
 	// mapsMu guards Attributes/Metadata/ModelStates map iteration and replacement.
 	// A single *Auth can be observed by List/Clone while another path still mutates
 	// those maps; Go maps are not safe for concurrent read/write.
@@ -735,29 +741,6 @@ func (a *Auth) DisplayAccount() string {
 	return strings.TrimSpace(value)
 }
 
-// ExpirationTime attempts to extract the credential expiration timestamp from metadata.
-// It inspects common absolute expiry keys, expires_in plus timestamp, and nested
-// token objects to remain compatible with legacy auth file formats.
-// If the access_token contains a valid JWT exp claim, it is given priority.
-func (a *Auth) ExpirationTime() (time.Time, bool) {
-	if a == nil {
-		return time.Time{}, false
-	}
-	tokenStr := authOuterAccessToken(a)
-	if tokenStr != "" && a.RejectedAccessToken != "" && a.RejectedAccessToken == tokenStr {
-		return time.Unix(0, 0), true
-	}
-	if tokenStr != "" {
-		if jwtExp, ok := parseJWTExp(tokenStr); ok {
-			return jwtExp, true
-		}
-	}
-	if ts, ok := expirationFromMap(a.Metadata); ok {
-		return ts, true
-	}
-	return time.Time{}, false
-}
-
 // ExpirationTime attempts to extract the active credential expiration timestamp from metadata.
 // When use_siwc is enabled on a Codex credential, the active SIWC section expiration is returned.
 func (a *Auth) ExpirationTime() (time.Time, bool) {
@@ -1247,4 +1230,214 @@ func normaliseUnix(raw int64) time.Time {
 		return time.UnixMilli(raw)
 	}
 	return time.Unix(raw, 0)
+}
+
+const invalidatedFileSnapshotDigest = "invalidated"
+
+var readAuthSnapshotFileFunc = os.ReadFile
+
+// BindFileSnapshot binds an unversioned file-synthesized Auth snapshot to the
+// source file path and canonical SHA-256 digest of the bytes from which it was parsed.
+func (a *Auth) BindFileSnapshot(path string, data []byte) {
+	if a == nil || len(data) == 0 {
+		return
+	}
+	digest := canonicalAuthFileDigest(data)
+	if digest == "" {
+		return
+	}
+	a.fileSnapshotPath = strings.TrimSpace(path)
+	a.fileSnapshotDigest = digest
+}
+
+// ClearFileSnapshot removes any unversioned file-observation binding once the
+// Auth is committed to runtime state or normalized for comparison.
+func (a *Auth) ClearFileSnapshot() {
+	if a == nil {
+		return
+	}
+	a.fileSnapshotPath = ""
+	a.fileSnapshotDigest = ""
+}
+
+// InvalidateFileSnapshot marks an unversioned file snapshot as discarded so a
+// subsequent re-read of identical or reformatted file content is not suppressed.
+func (a *Auth) InvalidateFileSnapshot() {
+	if !a.HasFileSnapshot() {
+		return
+	}
+	a.fileSnapshotDigest = invalidatedFileSnapshotDigest
+}
+
+// HasFileSnapshot reports whether this Auth is an unversioned file-synthesized
+// snapshot bound to a specific file observation digest.
+func (a *Auth) HasFileSnapshot() bool {
+	return a != nil && a.Generation == 0 && a.RegistrationEpoch == 0 && a.fileSnapshotDigest != ""
+}
+
+// FileSnapshotPath returns the backing file path bound to this file snapshot.
+func (a *Auth) FileSnapshotPath() string {
+	if a == nil {
+		return ""
+	}
+	path := strings.TrimSpace(a.fileSnapshotPath)
+	if path == "" && a.Attributes != nil {
+		path = strings.TrimSpace(a.Attributes[AttributePath])
+		if path == "" {
+			path = strings.TrimSpace(a.Attributes[AttributeSource])
+		}
+	}
+	return path
+}
+
+// SameFileSnapshot reports whether two unversioned file snapshots observed the
+// same canonical file content.
+func (a *Auth) SameFileSnapshot(other *Auth) bool {
+	if !a.HasFileSnapshot() || !other.HasFileSnapshot() {
+		return false
+	}
+	if a.fileSnapshotDigest == invalidatedFileSnapshotDigest || other.fileSnapshotDigest == invalidatedFileSnapshotDigest {
+		return false
+	}
+	return a.fileSnapshotDigest == other.fileSnapshotDigest && a.fileSnapshotPath == other.fileSnapshotPath
+}
+
+// FileSnapshotMatchesDisk reports whether the backing file on disk still
+// exists, is readable, and matches the canonical digest observed when this
+// snapshot was synthesized.
+func (a *Auth) FileSnapshotMatchesDisk() bool {
+	if !a.HasFileSnapshot() {
+		return true
+	}
+	path := a.FileSnapshotPath()
+	if path == "" {
+		return false
+	}
+	data, errRead := readAuthSnapshotFileFunc(path)
+	if errRead != nil || len(data) == 0 {
+		return false
+	}
+	return canonicalAuthFileDigest(data) == a.fileSnapshotDigest
+}
+
+// IsCodexUseSIWC reports whether a Codex auth record is configured to use its nested "siwc" section.
+func IsCodexUseSIWC(a *Auth) bool {
+	if a == nil {
+		return false
+	}
+	enabled := false
+	if len(a.Attributes) > 0 {
+		if raw := strings.TrimSpace(a.Attributes["use_siwc"]); raw != "" {
+			if parsed, ok := parseBoolAny(raw); ok {
+				enabled = parsed
+			}
+		}
+	}
+	if !enabled && a.Metadata != nil {
+		if parsed, ok := parseBoolAny(a.Metadata["use_siwc"]); ok {
+			enabled = parsed
+		}
+	}
+	return enabled
+}
+
+// IsCodexClientUserAgent reports whether userAgent identifies a Codex client.
+func IsCodexClientUserAgent(userAgent string) bool {
+	ua := strings.ToLower(strings.TrimSpace(userAgent))
+	if ua == "" {
+		return false
+	}
+	return strings.Contains(ua, "codex-desktop") ||
+		strings.Contains(ua, "codex desktop") ||
+		strings.Contains(ua, "codex-rs") ||
+		strings.Contains(ua, "codex_cli_rs") ||
+		strings.Contains(ua, "codex-tui") ||
+		strings.Contains(ua, "codex_exec")
+}
+
+// IsCodexClientRequest reports whether the request originates from a Codex client.
+func IsCodexClientRequest(ctx context.Context, clientHeaders ...http.Header) bool {
+	if ctx != nil {
+		if ginCtx, ok := ctx.Value("gin").(*gin.Context); ok && ginCtx != nil && ginCtx.Request != nil {
+			if IsCodexClientUserAgent(headerValueFromHTTPHeader(ginCtx.Request.Header, "User-Agent")) {
+				return true
+			}
+		}
+	}
+	for _, headers := range clientHeaders {
+		if IsCodexClientUserAgent(headerValueFromHTTPHeader(headers, "User-Agent")) {
+			return true
+		}
+	}
+	return false
+}
+
+// IsCodexUseSIWCForRequest reports whether a request should use the nested SIWC credential section.
+// Requests from Codex clients ignore use_siwc and always use non-SIWC credentials.
+func IsCodexUseSIWCForRequest(ctx context.Context, a *Auth, clientHeaders ...http.Header) bool {
+	if IsCodexClientRequest(ctx, clientHeaders...) {
+		return false
+	}
+	return IsCodexUseSIWC(a)
+}
+
+// OuterExpirationTime extracts the outer credential expiration timestamp, ignoring the nested "siwc" section.
+func (a *Auth) OuterExpirationTime() (time.Time, bool) {
+	if a == nil {
+		return time.Time{}, false
+	}
+	tokenStr := authOuterAccessToken(a)
+	if tokenStr != "" && a.RejectedAccessToken != "" && a.RejectedAccessToken == tokenStr {
+		return time.Unix(0, 0), true
+	}
+	if tokenStr != "" {
+		if jwtExp, ok := parseJWTExp(tokenStr); ok {
+			return jwtExp, true
+		}
+	}
+	if ts, ok := expirationFromMap(a.Metadata); ok {
+		return ts, true
+	}
+	return time.Time{}, false
+}
+
+func canonicalAuthFileDigest(data []byte) string {
+	trimmed := bytes.TrimSpace(data)
+	if len(trimmed) == 0 {
+		return ""
+	}
+	decoder := json.NewDecoder(bytes.NewReader(trimmed))
+	decoder.UseNumber()
+	var parsed any
+	if errDecode := decoder.Decode(&parsed); errDecode == nil {
+		var trailing any
+		if errTrailing := decoder.Decode(&trailing); errTrailing == io.EOF {
+			if canonical, errMarshal := json.Marshal(parsed); errMarshal == nil {
+				sum := sha256.Sum256(canonical)
+				return hex.EncodeToString(sum[:])
+			}
+		}
+	}
+	sum := sha256.Sum256(trimmed)
+	return hex.EncodeToString(sum[:])
+}
+
+func headerValueFromHTTPHeader(headers http.Header, name string) string {
+	if headers == nil {
+		return ""
+	}
+	if value := strings.TrimSpace(headers.Get(name)); value != "" {
+		return value
+	}
+	for key, values := range headers {
+		if !strings.EqualFold(key, name) {
+			continue
+		}
+		for _, value := range values {
+			if value = strings.TrimSpace(value); value != "" {
+				return value
+			}
+		}
+	}
+	return ""
 }

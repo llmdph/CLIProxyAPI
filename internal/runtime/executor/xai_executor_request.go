@@ -1895,3 +1895,14 @@ func xaiCustomToolCallOutput(output gjson.Result) string {
 	}
 	return output.Raw
 }
+
+func xaiDefaultUserAgent() string {
+	return "xai-grok-workspace/" + xaiClientVersion()
+}
+
+func ensureXAIUserAgent(r *http.Request, clientHeaders ...http.Header) {
+	if r == nil {
+		return
+	}
+	misc.EnsureHeader(r.Header, util.ResolveClientHeaders(r, clientHeaders...), "User-Agent", xaiDefaultUserAgent())
+}

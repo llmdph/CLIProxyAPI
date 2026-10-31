@@ -376,8 +376,10 @@ func (h *Handler) PutXAIGrok47Accounts(c *gin.Context) {
 		c.JSON(http.StatusInternalServerError, gin.H{"error": "config unavailable"})
 		return
 	}
+	h.mu.Lock()
+	defer h.mu.Unlock()
 	h.cfg.XAI.Grok47Accounts = mode
-	h.persist(c)
+	h.persistLocked(c)
 }
 
 // Proxy URL
