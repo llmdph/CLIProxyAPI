@@ -166,11 +166,25 @@ func (e *XAIExecutor) Execute(ctx context.Context, auth *cliproxyauth.Auth, req 
 				if prepared.responseFormat == sdktranslator.FormatOpenAIResponse {
 					out = helps.EnsureResponsesUsageDetails(out)
 				}
-				return cliproxyexecutor.Response{
+				respOut := cliproxyexecutor.Response{
 					Payload:    out,
 					Incomplete: eventType == "response.incomplete",
 					Headers:    httpResp.Header.Clone(),
-				}, true, nil
+				}
+				// Only HTTP 200 + response.completed missing Think is no_think_stream.
+				// incomplete / truncated / other errors must not disable accounts or mark sessions.
+				if eventType == "response.completed" {
+					if errThink := xaiGateThinkStream(ctx, auth, prepared.body, data, completedData, respOut, nil, nil); errThink != nil {
+						authID := ""
+						if auth != nil {
+							authID = strings.TrimSpace(auth.ID)
+						}
+						log.Warnf("xai: HTTP 200 completed without Think, quarantining warp auth=%s err=%v", authID, errThink)
+						helps.QuarantineWarpAfterNoThink(ctx, e.cfg, auth)
+						return respOut, true, errThink
+					}
+				}
+				return respOut, true, nil
 			}
 		}
 		return cliproxyexecutor.Response{}, false, nil
@@ -235,33 +249,6 @@ func (e *XAIExecutor) Execute(ctx context.Context, auth *cliproxyauth.Auth, req 
 				upstreamUsage.PublishFailure(ctx, reporter, errTerminal)
 				return resp, errTerminal
 			}
-			completedData := xaiPatchCompletedOutput(eventData, outputItemsByIndex, outputItemsFallback)
-			completedData = xaiNormalizeReasoningSummaryData(completedData)
-			if eventType == "response.completed" {
-				// A truncated turn carries no replayable terminal state, so only a
-				// completed response may refresh the reasoning replay cache.
-				cacheXAIReasoningReplayFromCompleted(ctx, prepared.replayScope, completedData)
-			}
-			var param any
-			out := sdktranslator.TranslateNonStream(ctx, prepared.to, prepared.responseFormat, req.Model, prepared.originalPayload, prepared.body, completedData, &param)
-			if prepared.responseFormat == sdktranslator.FormatOpenAIResponse {
-				out = helps.EnsureResponsesUsageDetails(out)
-			}
-			respOut := cliproxyexecutor.Response{Payload: out, Headers: httpResp.Header.Clone()}
-			// Only HTTP 200 + response.completed missing Think is no_think_stream.
-			// incomplete / truncated / other errors must not disable accounts or mark sessions.
-			if eventType == "response.completed" {
-				if errThink := xaiGateThinkStream(ctx, auth, prepared.body, data, completedData, respOut, nil, nil); errThink != nil {
-					authID := ""
-					if auth != nil {
-						authID = strings.TrimSpace(auth.ID)
-					}
-					log.Warnf("xai: HTTP 200 completed without Think, quarantining warp auth=%s err=%v", authID, errThink)
-					helps.QuarantineWarpAfterNoThink(ctx, e.cfg, auth)
-					return respOut, errThink
-				}
-			}
-			return respOut, nil
 		}
 	}
 	if prepared.applyPatch.HasPatchActivity() {
