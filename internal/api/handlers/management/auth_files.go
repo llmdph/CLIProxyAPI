@@ -894,7 +894,7 @@ func authFileRequestRetryFromJSON(data []byte) (int, bool) {
 }
 
 func authFileXAIDownrankFromJSON(data []byte, provider string) bool {
-	raw := gjson.GetBytes(data, "xai_downrank_pool")
+	raw := ojson.GetBytes(data, "xai_downrank_pool")
 	if !raw.Exists() {
 		return false
 	}
