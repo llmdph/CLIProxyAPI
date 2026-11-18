@@ -52,8 +52,11 @@ func (e *AntigravityExecutor) ExecuteStream(ctx context.Context, auth *cliproxya
 	}
 	ctx = context.WithValue(ctx, "alt", "")
 	if !antigravityCoolingDisabled(auth, e.cfg) {
-		if inCooldown, remaining, errCooldown := antigravityIsInShortCooldownRequired(ctx, auth, baseModel, time.Now()); errCooldown != nil {
-			return nil, homeKVUnavailableStatusErr(errCooldown)
+		inCooldown, remaining, errCooldown := antigravityIsInShortCooldownRequired(ctx, auth, baseModel, time.Now())
+		if errCooldown != nil {
+			// Advisory ledger only: degrade to the in-process cooldown state
+			// instead of failing the request when the KV store is unavailable.
+			log.Warnf("antigravity executor: short cooldown check degraded: %v", errCooldown)
 		} else if inCooldown && !antigravityShouldBypassShortCooldown(ctx, e.cfg) {
 			log.Debugf("antigravity executor: auth %s in short cooldown for model %s (%s remaining), returning 429 to switch auth", auth.ID, baseModel, remaining)
 			d := remaining
@@ -176,8 +179,7 @@ func (e *AntigravityExecutor) ExecuteStream(ctx context.Context, auth *cliproxya
 				closeAntigravityAuthIdleTransports(auth)
 				if decision.retryAfter != nil && *decision.retryAfter > 0 && !antigravityCoolingDisabled(auth, e.cfg) {
 					if errMarkCooldown := markAntigravityShortCooldownRequired(ctx, auth, baseModel, time.Now(), *decision.retryAfter); errMarkCooldown != nil {
-						err = homeKVUnavailableStatusErr(errMarkCooldown)
-						return nil, err
+						log.Warnf("antigravity executor: short cooldown write degraded: %v", errMarkCooldown)
 					}
 					log.Debugf("antigravity executor: short quota cooldown (%s) for model %s recorded", *decision.retryAfter, baseModel)
 				}

@@ -3,9 +3,16 @@ package kvstore
 import (
 	"fmt"
 	"sync"
+	"time"
 
 	log "github.com/sirupsen/logrus"
 )
+
+// localRecoveryInterval is how often a failed local bbolt open is retried in
+// the background. A transient flock collision (for example a canary instance
+// that briefly shares the same auth directory during a rollout) must not pin
+// the KV store in a permanently unavailable state.
+const localRecoveryInterval = 2 * time.Second
 
 var (
 	controllerMu sync.RWMutex
@@ -14,6 +21,7 @@ var (
 	localStore   *BoltStore
 	localPath    string
 	localErr     error
+	localRecover chan struct{}
 )
 
 // RegisterHomeProvider registers the callback used by CurrentKVClient to inspect
@@ -28,6 +36,8 @@ func RegisterHomeProvider(fn func() (KVClient, bool, error)) {
 func ConfigureLocal(enabled bool, rawPath string) error {
 	controllerMu.Lock()
 	defer controllerMu.Unlock()
+
+	stopLocalRecoveryLocked()
 
 	if !enabled {
 		return shutdownLocalLocked()
@@ -64,8 +74,10 @@ func ConfigureLocal(enabled bool, rawPath string) error {
 	store, errOpen := OpenBoltStore(resolvedPath)
 	if errOpen != nil {
 		localEnabled = true
+		localPath = resolvedPath
 		localErr = errOpen
 		log.Errorf("local kv store open failed (path=%s): %v", resolvedPath, errOpen)
+		startLocalRecoveryLocked()
 		return errOpen
 	}
 
@@ -84,6 +96,7 @@ func ShutdownLocal() error {
 }
 
 func shutdownLocalLocked() error {
+	stopLocalRecoveryLocked()
 	var errClose error
 	if localStore != nil {
 		errClose = localStore.Close()
@@ -93,6 +106,60 @@ func shutdownLocalLocked() error {
 	localPath = ""
 	localErr = nil
 	return errClose
+}
+
+// startLocalRecoveryLocked launches a single background retry loop for a local
+// store that failed to open. The loop exits as soon as the store opens, the
+// configuration changes, or the store is shut down.
+func startLocalRecoveryLocked() {
+	if localRecover != nil || localPath == "" {
+		return
+	}
+	stop := make(chan struct{})
+	localRecover = stop
+	path := localPath
+	go func() {
+		ticker := time.NewTicker(localRecoveryInterval)
+		defer ticker.Stop()
+		for {
+			select {
+			case <-stop:
+				return
+			case <-ticker.C:
+			}
+
+			store, errOpen := OpenBoltStore(path)
+
+			controllerMu.Lock()
+			if localRecover != stop {
+				controllerMu.Unlock()
+				if store != nil {
+					if errClose := store.Close(); errClose != nil {
+						log.Errorf("local kv store recovery close failed: %v", errClose)
+					}
+				}
+				return
+			}
+			if errOpen != nil {
+				localErr = errOpen
+				controllerMu.Unlock()
+				continue
+			}
+			localStore = store
+			localErr = nil
+			localRecover = nil
+			controllerMu.Unlock()
+			log.Infof("local kv store recovered (path=%s)", path)
+			return
+		}
+	}()
+}
+
+func stopLocalRecoveryLocked() {
+	if localRecover != nil {
+		close(localRecover)
+		localRecover = nil
+	}
 }
 
 // CurrentKVClient returns the active KVClient using the three-tier routing order:
