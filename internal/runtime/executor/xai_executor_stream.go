@@ -9,11 +9,11 @@ import (
 	"strings"
 	"sync"
 
+	"github.com/MoeForge/moego/ojson"
 	"github.com/router-for-me/CLIProxyAPI/v8/internal/runtime/executor/helps"
 	cliproxyauth "github.com/router-for-me/CLIProxyAPI/v8/sdk/cliproxy/auth"
 	cliproxyexecutor "github.com/router-for-me/CLIProxyAPI/v8/sdk/cliproxy/executor"
 	log "github.com/sirupsen/logrus"
-	"github.com/tidwall/gjson"
 )
 
 func (e *XAIExecutor) ExecuteStream(ctx context.Context, auth *cliproxyauth.Auth, req cliproxyexecutor.Request, opts cliproxyexecutor.Options) (_ *cliproxyexecutor.StreamResult, err error) {
@@ -32,7 +32,7 @@ func (e *XAIExecutor) ExecuteStream(ctx context.Context, auth *cliproxyauth.Auth
 	baseURL := xaiChatBaseURL(auth)
 	logXAIResolvedBaseURL(ctx, baseURL)
 
-	prepared, err := e.prepareResponsesRequest(ctx, req, opts, true)
+	prepared, err := e.prepareResponsesRequestDoc(ctx, req, opts, true)
 	if err != nil {
 		return nil, err
 	}
@@ -43,6 +43,11 @@ func (e *XAIExecutor) ExecuteStream(ctx context.Context, auth *cliproxyauth.Auth
 
 	url := strings.TrimSuffix(baseURL, "/") + "/responses"
 	ctx = helps.WithWarpDialRecorder(ctx)
+	doc := prepared.ensureDoc()
+	sanitizeXAIInputEncryptedContentForBaseURLDoc(doc, baseURL)
+	helps.FinalizePayloadDoc(helps.WithPayloadFinalizer(ctx, prepared.finalizePayload), doc)
+	prepared.body = doc.Bytes()
+	reporter.SetTranslatedReasoningEffort(prepared.body, e.Identifier())
 	httpReq, err := http.NewRequestWithContext(ctx, http.MethodPost, url, bytes.NewReader(prepared.body))
 	if err != nil {
 		return nil, err
@@ -64,11 +69,11 @@ func (e *XAIExecutor) ExecuteStream(ctx context.Context, auth *cliproxyauth.Auth
 		if errClose := httpResp.Body.Close(); errClose != nil {
 			log.Errorf("xai executor: close response body error: %v", errClose)
 		}
+		helps.AppendAPIResponseChunk(ctx, e.cfg, data)
 		if errRead != nil {
 			helps.RecordAPIResponseError(ctx, e.cfg, errRead)
 			return nil, errRead
 		}
-		helps.AppendAPIResponseChunk(ctx, e.cfg, data)
 		helps.LogWithRequestID(ctx).Debugf("request error, error status: %d, error message: %s", httpResp.StatusCode, helps.SummarizeErrorBody(httpResp.Header.Get("Content-Type"), data))
 		return nil, xaiStatusErr(httpResp.StatusCode, data)
 	}
@@ -151,10 +156,13 @@ func (e *XAIExecutor) pumpXAIChatStream(
 	scanner := bufio.NewScanner(httpResp.Body)
 	scanner.Buffer(nil, 52_428_800)
 	claudeInputTokens := helps.NewClaudeInputTokenState(prepared.from, prepared.to, prepared.responseFormat, prepared.originalPayload)
+	var streamUsage helps.StreamUsageBuffer
+	defer streamUsage.Publish(ctx, reporter)
 	var param any
 	outputItemsByIndex := make(map[int64][]byte)
 	var outputItemsFallback [][]byte
 	responseFilter := newXAIInternalXSearchResponseFilter(prepared.filterInternalXSearch, prepared.clientDeclaredTools)
+	namespaceRestorer := newXAINamespaceRestorer(prepared.namespaceTools)
 	var pendingEventLine []byte
 	var pending [][]byte
 	var translatedChunks [][]byte
@@ -196,7 +204,32 @@ func (e *XAIExecutor) pumpXAIChatStream(
 	}
 
 	emitTranslatedLine := func(translatedLine []byte) error {
-		chunks := helps.TranslateStreamWithClaudeInputTokens(ctx, prepared.to, prepared.responseFormat, req.Model, prepared.originalPayload, prepared.body, translatedLine, &param, claudeInputTokens)
+		lines, errBridge := prepared.applyPatch.Stream(translatedLine)
+		if errBridge != nil {
+			streamUsage.PublishFailure(ctx, reporter, statusErr{code: http.StatusBadGateway, msg: helps.ApplyPatchUpstreamErrorMessage})
+		}
+		var chunks [][]byte
+		for _, l := range lines {
+			if bytes.HasPrefix(l, xaiDataTag) {
+				ed := bytes.TrimSpace(l[len(xaiDataTag):])
+				switch ojson.GetBytesNoCopy(ed, "type").String() {
+				case "response.output_item.done":
+					xaiCollectOutputItemDone(ed, outputItemsByIndex, &outputItemsFallback)
+				case "response.completed", "response.incomplete":
+					// Reconstruct only after the bridge has restored dispatcher children.
+					ed = xaiPatchCompletedOutput(ed, outputItemsByIndex, outputItemsFallback)
+					ed = xaiNormalizeReasoningSummaryData(ed)
+					if ojson.GetBytesNoCopy(ed, "type").String() == "response.completed" {
+						// Only completed responses carry replayable terminal state.
+						cacheXAIReasoningReplayFromCompleted(ctx, prepared.replayScope, ed)
+					}
+					ending := l[len(bytes.TrimRight(l, "\r\n")):]
+					l = append(append([]byte("data: "), ed...), ending...)
+				}
+			}
+			chunks = append(chunks, helps.TranslateStreamWithClaudeInputTokens(ctx, prepared.to, prepared.responseFormat, req.Model, prepared.originalPayload, prepared.body, l, &param, claudeInputTokens)...)
+		}
+		helps.RecordApplyPatchStreamFailureWithUsage(ctx, param, reporter, &streamUsage, statusErr{code: http.StatusBadGateway, msg: helps.ApplyPatchUpstreamErrorMessage})
 		translatedChunks = append(translatedChunks, chunks...)
 		if live {
 			return sendXAIStreamPayloads(ctx, out, chunks)
@@ -223,7 +256,14 @@ func (e *XAIExecutor) pumpXAIChatStream(
 			eventDataList := xaiNormalizeReasoningSummaryDataEvents(bytes.TrimSpace(line[len(xaiDataTag):]))
 			hasPendingEventLine := pendingEventLine != nil
 			for i, eventData := range eventDataList {
-				eventData = restoreXAINamespaceToolCalls(eventData, prepared.namespaceTools)
+				if rawEventType := ojson.GetBytesNoCopy(eventData, "type").String(); rawEventType == "response.output_item.done" || rawEventType == "response.completed" || rawEventType == "response.incomplete" || rawEventType == "response.done" {
+					streamUsage.ObserveResponsesStream(eventData)
+				}
+				prepared.applyPatch.RememberDispatcherEvent(eventData)
+				eventData = namespaceRestorer.restore(eventData)
+				if prepared.webSearchAlias != "" {
+					eventData = restoreXAIClientWebSearchName(eventData, prepared.webSearchAlias)
+				}
 				eventData = responseFilter.apply(eventData)
 				if len(eventData) == 0 {
 					if hasPendingEventLine && i == 0 {
@@ -231,6 +271,7 @@ func (e *XAIExecutor) pumpXAIChatStream(
 					}
 					continue
 				}
+				reporter.ObserveResponseModel(eventData)
 				if errEvt, okErr := xaiStreamEventStatusErr(eventData); okErr {
 					return live, errEvt
 				}
@@ -247,14 +288,11 @@ func (e *XAIExecutor) pumpXAIChatStream(
 						}
 					}
 				}
-				normalizedEventName := gjson.GetBytes(eventData, "type").String()
+				normalizedEventName := ojson.GetBytesNoCopy(eventData, "type").String()
 				switch normalizedEventName {
 				case "response.output_item.done":
 					xaiCollectOutputItemDone(eventData, outputItemsByIndex, &outputItemsFallback)
 				case "response.completed", "response.incomplete":
-					if detail, ok := helps.ParseCodexUsage(eventData); ok {
-						reporter.Publish(ctx, detail)
-					}
 					eventData = xaiPatchCompletedOutput(eventData, outputItemsByIndex, outputItemsFallback)
 					eventData = xaiNormalizeReasoningSummaryData(eventData)
 					if normalizedEventName == "response.completed" {
@@ -263,7 +301,7 @@ func (e *XAIExecutor) pumpXAIChatStream(
 					} else {
 						sawIncomplete = true
 					}
-					normalizedEventName = gjson.GetBytes(eventData, "type").String()
+					normalizedEventName = ojson.GetBytesNoCopy(eventData, "type").String()
 				}
 
 				if hasPendingEventLine {
@@ -301,6 +339,27 @@ func (e *XAIExecutor) pumpXAIChatStream(
 	if errScan := scanner.Err(); errScan != nil {
 		helps.RecordAPIResponseError(ctx, e.cfg, errScan)
 		return live, errScan
+	}
+
+	finishEvents, errFinish := prepared.applyPatch.FinishStream()
+	if errFinish != nil {
+		streamUsage.PublishFailure(ctx, reporter, statusErr{code: http.StatusBadGateway, msg: helps.ApplyPatchUpstreamErrorMessage})
+	}
+	for _, event := range finishEvents {
+		chunks := helps.TranslateStreamWithClaudeInputTokens(ctx, prepared.to, prepared.responseFormat, req.Model, prepared.originalPayload, prepared.body, event, &param, claudeInputTokens)
+		translatedChunks = append(translatedChunks, chunks...)
+		if live {
+			if errSend := sendXAIStreamPayloads(ctx, out, chunks); errSend != nil {
+				return live, errSend
+			}
+		} else {
+			pending = append(pending, chunks...)
+		}
+	}
+	if errFinish != nil {
+		errFinish = statusErr{code: http.StatusBadGateway, msg: helps.ApplyPatchUpstreamErrorMessage}
+		streamUsage.PublishFailure(ctx, reporter, errFinish)
+		return live, errFinish
 	}
 
 	if live {
