@@ -6,7 +6,7 @@ import (
 	"unicode/utf8"
 
 	cliproxyexecutor "github.com/router-for-me/CLIProxyAPI/v8/sdk/cliproxy/executor"
-	"github.com/tidwall/gjson"
+	"github.com/MoeForge/moego/ojson"
 )
 
 func classifyLLMRequest(req cliproxyexecutor.Request, opts cliproxyexecutor.Options) string {
@@ -49,10 +49,10 @@ func isCompactionRequest(opts cliproxyexecutor.Options, bodies [][]byte) bool {
 		if len(body) == 0 {
 			continue
 		}
-		if requestKindIsCompaction(gjson.GetBytes(body, "request_kind").String()) {
+		if requestKindIsCompaction(ojson.GetBytes(body, "request_kind").String()) {
 			return true
 		}
-		if requestKindIsCompaction(gjson.GetBytes(body, "client_metadata.request_kind").String()) {
+		if requestKindIsCompaction(ojson.GetBytes(body, "client_metadata.request_kind").String()) {
 			return true
 		}
 		if bodyTurnMetadataLooksLikeCompaction(body) {
@@ -68,7 +68,7 @@ func isCompactionRequest(opts cliproxyexecutor.Options, bodies [][]byte) bool {
 		// Claude Code /compact is a /v1/messages summarizer turn.
 		if looksLikeCompactionPrompt(lastUserText(body)) ||
 			looksLikeCompactionPrompt(systemText(body)) ||
-			looksLikeCompactionPrompt(gjson.GetBytes(body, "instructions").String()) ||
+			looksLikeCompactionPrompt(ojson.GetBytes(body, "instructions").String()) ||
 			looksLikeCompactionPrompt(latestNonToolText(body)) {
 			return true
 		}
@@ -88,7 +88,7 @@ func bodyTurnMetadataLooksLikeCompaction(body []byte) bool {
 		"client_metadata.x-codex-turn-metadata",
 		"response.client_metadata.x-codex-turn-metadata",
 	} {
-		node := gjson.GetBytes(body, path)
+		node := ojson.GetBytes(body, path)
 		if !node.Exists() {
 			continue
 		}
@@ -114,11 +114,11 @@ func turnMetadataLooksLikeCompaction(raw string) bool {
 	if raw == "" {
 		return false
 	}
-	if requestKindIsCompaction(gjson.Get(raw, "request_kind").String()) {
+	if requestKindIsCompaction(ojson.Get(raw, "request_kind").String()) {
 		return true
 	}
-	compaction := gjson.Get(raw, "compaction")
-	if !compaction.Exists() || compaction.Type == gjson.Null {
+	compaction := ojson.Get(raw, "compaction")
+	if !compaction.Exists() || compaction.Type == ojson.Null {
 		return false
 	}
 	if strings.TrimSpace(compaction.Get("strategy").String()) != "" {
@@ -169,7 +169,7 @@ func looksLikeCompactionPrompt(text string) bool {
 }
 
 func inputHasItemType(body []byte, want string) bool {
-	input := gjson.GetBytes(body, "input")
+	input := ojson.GetBytes(body, "input")
 	if !input.IsArray() {
 		return false
 	}
@@ -221,7 +221,7 @@ func looksLikeClaudeCodeTitleRequest(body []byte) bool {
 		return true
 	}
 	sys := systemText(body)
-	instr := gjson.GetBytes(body, "instructions").String()
+	instr := ojson.GetBytes(body, "instructions").String()
 	if looksLikeSessionName(sys) || looksLikeSessionName(instr) {
 		return true
 	}
@@ -239,7 +239,7 @@ func hasClaudeSessionTitleWrapper(text string) bool {
 }
 
 func thinkingDisabled(body []byte) bool {
-	switch strings.ToLower(strings.TrimSpace(gjson.GetBytes(body, "thinking.type").String())) {
+	switch strings.ToLower(strings.TrimSpace(ojson.GetBytes(body, "thinking.type").String())) {
 	case "disabled", "none":
 		return true
 	}
@@ -261,8 +261,8 @@ func jsonSchemaIsTitleOnly(body []byte) bool {
 		"text.format.schema",
 		"text.format.json_schema.schema",
 	} {
-		schema := gjson.GetBytes(body, path)
-		if !schema.Exists() || schema.Type == gjson.Null {
+		schema := ojson.GetBytes(body, path)
+		if !schema.Exists() || schema.Type == ojson.Null {
 			continue
 		}
 		props := schema.Get("properties")
@@ -271,7 +271,7 @@ func jsonSchemaIsTitleOnly(body []byte) bool {
 		}
 		n := 0
 		hasTitle := false
-		props.ForEach(func(key, _ gjson.Result) bool {
+		props.ForEach(func(key, _ ojson.Result) bool {
 			n++
 			if key.String() == "title" {
 				hasTitle = true
@@ -293,8 +293,8 @@ func jsonSchemaIsTitleOnly(body []byte) bool {
 }
 
 func systemText(body []byte) string {
-	node := gjson.GetBytes(body, "system")
-	if node.Type == gjson.String {
+	node := ojson.GetBytes(body, "system")
+	if node.Type == ojson.String {
 		return node.String()
 	}
 	if !node.IsArray() {
@@ -302,7 +302,7 @@ func systemText(body []byte) string {
 	}
 	var b strings.Builder
 	for _, part := range node.Array() {
-		if part.Type == gjson.String {
+		if part.Type == ojson.String {
 			b.WriteString(part.String())
 			b.WriteByte('\n')
 			continue
@@ -316,7 +316,7 @@ func systemText(body []byte) string {
 func messageCount(body []byte) int {
 	count := 0
 	for _, path := range []string{"input", "messages"} {
-		node := gjson.GetBytes(body, path)
+		node := ojson.GetBytes(body, path)
 		if node.IsArray() {
 			count += len(node.Array())
 		}
@@ -346,7 +346,7 @@ func isInternalRequest(bodies [][]byte) bool {
 }
 
 func isCodexPersona(body []byte) bool {
-	instructions := gjson.GetBytes(body, "instructions").String()
+	instructions := ojson.GetBytes(body, "instructions").String()
 	if strings.Contains(instructions, "You are Codex") || strings.Contains(strings.ToLower(instructions), "commentary channel") {
 		return true
 	}
@@ -363,9 +363,9 @@ func isLowEffort(body []byte) bool {
 }
 
 func requestEffort(body []byte) string {
-	effort := strings.ToLower(strings.TrimSpace(gjson.GetBytes(body, "reasoning.effort").String()))
+	effort := strings.ToLower(strings.TrimSpace(ojson.GetBytes(body, "reasoning.effort").String()))
 	if effort == "" {
-		effort = strings.ToLower(strings.TrimSpace(gjson.GetBytes(body, "reasoning_effort").String()))
+		effort = strings.ToLower(strings.TrimSpace(ojson.GetBytes(body, "reasoning_effort").String()))
 	}
 	return effort
 }
@@ -385,7 +385,7 @@ func requestLooksSmall(body []byte) bool {
 	}
 	count := 0
 	for _, path := range []string{"input", "messages"} {
-		node := gjson.GetBytes(body, path)
+		node := ojson.GetBytes(body, path)
 		if !node.IsArray() {
 			continue
 		}
@@ -459,7 +459,7 @@ func sessionNameText(body []byte) string {
 		b.WriteString(s)
 		b.WriteByte('\n')
 	}
-	write(gjson.GetBytes(body, "instructions").String())
+	write(ojson.GetBytes(body, "instructions").String())
 	write(systemText(body))
 	write(lastUserText(body))
 	return b.String()
@@ -467,7 +467,7 @@ func sessionNameText(body []byte) string {
 
 func latestNonToolText(body []byte) string {
 	for _, path := range []string{"input", "messages"} {
-		node := gjson.GetBytes(body, path)
+		node := ojson.GetBytes(body, path)
 		if !node.IsArray() {
 			continue
 		}
@@ -492,15 +492,15 @@ func latestNonToolText(body []byte) string {
 	return ""
 }
 
-func messageItemText(item gjson.Result) string {
+func messageItemText(item ojson.Result) string {
 	content := item.Get("content")
-	if content.Type == gjson.String {
+	if content.Type == ojson.String {
 		return content.String()
 	}
 	if content.IsArray() {
 		var b strings.Builder
 		for _, part := range content.Array() {
-			if part.Type == gjson.String {
+			if part.Type == ojson.String {
 				b.WriteString(part.String())
 				b.WriteByte('\n')
 				continue
@@ -515,8 +515,8 @@ func messageItemText(item gjson.Result) string {
 
 func lastUserText(body []byte) string {
 	for _, path := range []string{"input", "messages"} {
-		node := gjson.GetBytes(body, path)
-		if node.Type == gjson.String {
+		node := ojson.GetBytes(body, path)
+		if node.Type == ojson.String {
 			return node.String()
 		}
 		if !node.IsArray() {

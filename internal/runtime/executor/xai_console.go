@@ -18,8 +18,7 @@ import (
 
 	"github.com/google/uuid"
 	cliproxyauth "github.com/router-for-me/CLIProxyAPI/v8/sdk/cliproxy/auth"
-	"github.com/tidwall/gjson"
-	"github.com/tidwall/sjson"
+	"github.com/MoeForge/moego/ojson"
 )
 
 const (
@@ -60,43 +59,68 @@ func (e *XAIExecutor) applyXAIConsoleRequestBody(auth *cliproxyauth.Auth, prepar
 	// include=["reasoning.encrypted_content"] or use_encrypted_content=true.
 	// Do not opt into ciphertext. Do not force reasoning.summary=detailed:
 	// Console still will not return readable think text, and detailed delays TTFT.
-	prepared.body = stripXAIConsoleEncryptedThink(prepared.body)
+	if len(prepared.body) > 0 && prepared.doc == nil {
+		prepared.body = stripXAIConsoleEncryptedThink(prepared.body)
+		return
+	}
+	stripXAIConsoleEncryptedThinkDoc(prepared.ensureDoc())
 }
 
 func stripXAIConsoleEncryptedThink(body []byte) []byte {
-	body, _ = sjson.DeleteBytes(body, "use_encrypted_content")
-	include := gjson.GetBytes(body, "include")
-	if !include.Exists() {
+	if len(body) == 0 {
 		return body
+	}
+	doc := ojson.NewDoc(body)
+	if !stripXAIConsoleEncryptedThinkDoc(doc) {
+		return body
+	}
+	return doc.Bytes()
+}
+
+func stripXAIConsoleEncryptedThinkDoc(doc *ojson.Doc) bool {
+	if doc == nil || doc.Len() == 0 {
+		return false
+	}
+	changed := false
+	if doc.Get("use_encrypted_content").Exists() {
+		if err := doc.Delete("use_encrypted_content"); err == nil {
+			changed = true
+		}
+	}
+	include := doc.Get("include")
+	if !include.Exists() {
+		return changed
 	}
 	if !include.IsArray() {
 		if include.String() == "reasoning.encrypted_content" {
-			updated, err := sjson.DeleteBytes(body, "include")
-			if err == nil {
-				return updated
+			if err := doc.Delete("include"); err == nil {
+				return true
 			}
 		}
-		return body
+		return changed
 	}
 	kept := make([]any, 0, len(include.Array()))
+	removed := false
 	for _, item := range include.Array() {
 		if item.String() == "reasoning.encrypted_content" {
+			removed = true
 			continue
 		}
 		kept = append(kept, item.Value())
 	}
+	if !removed {
+		return changed
+	}
 	if len(kept) == 0 {
-		updated, err := sjson.DeleteBytes(body, "include")
-		if err != nil {
-			return body
+		if err := doc.Delete("include"); err == nil {
+			return true
 		}
-		return updated
+		return changed
 	}
-	updated, err := sjson.SetBytes(body, "include", kept)
-	if err != nil {
-		return body
+	if err := doc.Set("include", kept); err == nil {
+		return true
 	}
-	return updated
+	return changed
 }
 
 func ensureXAIConsoleReasoningSummary(body []byte) []byte {

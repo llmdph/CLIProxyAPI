@@ -6,7 +6,7 @@ import (
 
 	cliproxyauth "github.com/router-for-me/CLIProxyAPI/v8/sdk/cliproxy/auth"
 	cliproxyexecutor "github.com/router-for-me/CLIProxyAPI/v8/sdk/cliproxy/executor"
-	"github.com/tidwall/gjson"
+	"github.com/MoeForge/moego/ojson"
 )
 
 func TestParseXAIThinkEvidenceZeroReasoning(t *testing.T) {
@@ -164,14 +164,14 @@ func TestXAIGateThinkStreamBuildEncryptedIsNoThink(t *testing.T) {
 
 func TestStripXAIConsoleEncryptedThink(t *testing.T) {
 	got := stripXAIConsoleEncryptedThink([]byte(`{"model":"grok-4.6","include":["reasoning.encrypted_content"],"use_encrypted_content":true}`))
-	if gjson.GetBytes(got, "include").Exists() {
+	if ojson.GetBytes(got, "include").Exists() {
 		t.Fatalf("encrypted include should be stripped: %s", got)
 	}
-	if gjson.GetBytes(got, "use_encrypted_content").Exists() {
+	if ojson.GetBytes(got, "use_encrypted_content").Exists() {
 		t.Fatalf("use_encrypted_content should be stripped: %s", got)
 	}
 	got = stripXAIConsoleEncryptedThink([]byte(`{"include":["reasoning.encrypted_content","file_search_call.results"]}`))
-	if gotVals := gjson.GetBytes(got, "include").Array(); len(gotVals) != 1 || gotVals[0].String() != "file_search_call.results" {
+	if gotVals := ojson.GetBytes(got, "include").Array(); len(gotVals) != 1 || gotVals[0].String() != "file_search_call.results" {
 		t.Fatalf("should keep other include values: %s", got)
 	}
 }
@@ -199,19 +199,19 @@ func TestXAIGateThinkStreamAcceptsConsoleReasoningTokens(t *testing.T) {
 
 func TestEnsureXAIConsoleReasoningSummary(t *testing.T) {
 	got := ensureXAIConsoleReasoningSummary([]byte(`{"model":"grok-4.6","reasoning":{"effort":"xhigh"}}`))
-	if gjson.GetBytes(got, "reasoning.summary").Exists() {
+	if ojson.GetBytes(got, "reasoning.summary").Exists() {
 		t.Fatalf("should not invent summary: %s", got)
 	}
 	got = ensureXAIConsoleReasoningSummary([]byte(`{"reasoning":{"effort":"high","summary":"auto"}}`))
-	if gjson.GetBytes(got, "reasoning.summary").String() != "auto" {
+	if ojson.GetBytes(got, "reasoning.summary").String() != "auto" {
 		t.Fatalf("should keep client summary: %s", got)
 	}
 	got = ensureXAIConsoleReasoningSummary([]byte(`{"reasoning":{"effort":"high","summary":"detailed"}}`))
-	if gjson.GetBytes(got, "reasoning.summary").String() != "detailed" {
+	if ojson.GetBytes(got, "reasoning.summary").String() != "detailed" {
 		t.Fatalf("should keep detailed summary: %s", got)
 	}
 	got = ensureXAIConsoleReasoningSummary([]byte(`{"reasoning":{"effort":"none"}}`))
-	if gjson.GetBytes(got, "reasoning.summary").Exists() {
+	if ojson.GetBytes(got, "reasoning.summary").Exists() {
 		t.Fatalf("none should not add summary: %s", got)
 	}
 }

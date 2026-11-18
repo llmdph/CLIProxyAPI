@@ -9,7 +9,7 @@ import (
 
 	cliproxyexecutor "github.com/router-for-me/CLIProxyAPI/v8/sdk/cliproxy/executor"
 	log "github.com/sirupsen/logrus"
-	"github.com/tidwall/gjson"
+	"github.com/MoeForge/moego/ojson"
 )
 
 const (
@@ -65,7 +65,7 @@ func grokConversationSessionID(req cliproxyexecutor.Request, opts cliproxyexecut
 	if len(payload) == 0 {
 		payload = opts.OriginalRequest
 	}
-	if sid := strings.TrimSpace(gjson.GetBytes(payload, "prompt_cache_key").String()); sid != "" {
+	if sid := strings.TrimSpace(ojson.GetBytes(payload, "prompt_cache_key").String()); sid != "" {
 		return sid
 	}
 	if sid := ExtractSessionID(opts.Headers, payload, opts.Metadata); sid != "" {

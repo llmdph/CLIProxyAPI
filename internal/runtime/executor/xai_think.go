@@ -11,7 +11,7 @@ import (
 	"github.com/router-for-me/CLIProxyAPI/v8/internal/llmreqlog"
 	cliproxyauth "github.com/router-for-me/CLIProxyAPI/v8/sdk/cliproxy/auth"
 	cliproxyexecutor "github.com/router-for-me/CLIProxyAPI/v8/sdk/cliproxy/executor"
-	"github.com/tidwall/gjson"
+	"github.com/MoeForge/moego/ojson"
 )
 
 // xaiThinkEvidence mirrors the LLM request-log "Think流" column:
@@ -57,7 +57,7 @@ func (e xaiThinkEvidence) detail() string {
 // xaiRequestExpectsThink reports whether the upstream Responses body asked for
 // a reasoning/Think stream. Only those requests participate in the gate.
 func xaiRequestExpectsThink(upstreamBody []byte) bool {
-	effort := strings.ToLower(strings.TrimSpace(gjson.GetBytes(upstreamBody, "reasoning.effort").String()))
+	effort := strings.ToLower(strings.TrimSpace(ojson.GetBytes(upstreamBody, "reasoning.effort").String()))
 	switch effort {
 	case "low", "medium", "high", "xhigh", "max":
 		return true
@@ -337,13 +337,13 @@ func ingestXAIThinkEvent(ev *xaiThinkEvidence, eventData []byte) {
 // xaiStreamEventIsAnswer reports that the model started visible output
 // without needing response.completed. Used to fail-fast no-think retries.
 func xaiStreamEventIsAnswer(eventData []byte) bool {
-	eventType := gjson.GetBytes(eventData, "type").String()
+	eventType := ojson.GetBytes(eventData, "type").String()
 	switch eventType {
 	case "response.output_text.delta", "response.output_text.done":
-		return strings.TrimSpace(gjson.GetBytes(eventData, "delta").String()) != "" ||
-			strings.TrimSpace(gjson.GetBytes(eventData, "text").String()) != ""
+		return strings.TrimSpace(ojson.GetBytes(eventData, "delta").String()) != "" ||
+			strings.TrimSpace(ojson.GetBytes(eventData, "text").String()) != ""
 	case "response.content_part.added", "response.content_part.delta", "response.content_part.done":
-		partType := gjson.GetBytes(eventData, "part.type").String()
+		partType := ojson.GetBytes(eventData, "part.type").String()
 		if partType == "reasoning_text" || partType == "summary_text" {
 			return false
 		}
@@ -351,17 +351,17 @@ func xaiStreamEventIsAnswer(eventData []byte) bool {
 			return true
 		}
 	case "response.output_item.added", "response.output_item.done":
-		itemType := gjson.GetBytes(eventData, "item.type").String()
+		itemType := ojson.GetBytes(eventData, "item.type").String()
 		return itemType == "message"
 	}
 	return false
 }
 
 func xaiStreamEventStatusErr(eventData []byte) (error, bool) {
-	eventType := gjson.GetBytes(eventData, "type").String()
-	status := int(gjson.GetBytes(eventData, "status").Int())
+	eventType := ojson.GetBytes(eventData, "type").String()
+	status := int(ojson.GetBytes(eventData, "status").Int())
 	if status == 0 {
-		status = int(gjson.GetBytes(eventData, "error.status").Int())
+		status = int(ojson.GetBytes(eventData, "error.status").Int())
 	}
 	if eventType != "error" && status < 400 {
 		return nil, false

@@ -9,7 +9,7 @@ import (
 
 	"github.com/gin-gonic/gin"
 	internallogging "github.com/router-for-me/CLIProxyAPI/v8/internal/logging"
-	"github.com/tidwall/gjson"
+	"github.com/MoeForge/moego/ojson"
 )
 
 const ginThinkStatsKey = "llmreqlog_think_stats"
@@ -109,7 +109,7 @@ func (s *thinkStats) ingestLine(line []byte) {
 	if len(payload) == 0 || bytes.Equal(payload, []byte("[DONE]")) {
 		return
 	}
-	if !gjson.ValidBytes(payload) {
+	if !ojson.ValidBytes(payload) {
 		// Non-SSE JSON responses may arrive as one blob without newlines.
 		if bytes.HasPrefix(bytes.TrimSpace(line), []byte("{")) {
 			s.ingestJSON(line)
@@ -120,7 +120,7 @@ func (s *thinkStats) ingestLine(line []byte) {
 }
 
 func (s *thinkStats) ingestJSON(raw []byte) {
-	root := gjson.ParseBytes(raw)
+	root := ojson.ParseBytes(raw)
 	if !root.Exists() {
 		return
 	}
@@ -226,11 +226,11 @@ func (s *thinkStats) ingestJSON(raw []byte) {
 	}
 }
 
-func extractReasoningText(node gjson.Result) string {
-	if !node.Exists() || node.Type == gjson.Null {
+func extractReasoningText(node ojson.Result) string {
+	if !node.Exists() || node.Type == ojson.Null {
 		return ""
 	}
-	if node.Type == gjson.String {
+	if node.Type == ojson.String {
 		return node.String()
 	}
 	if node.IsArray() {
@@ -240,7 +240,7 @@ func extractReasoningText(node gjson.Result) string {
 			case "summary_text", "reasoning_text", "text", "":
 				builder.WriteString(item.Get("text").String())
 			}
-			if item.Type == gjson.String {
+			if item.Type == ojson.String {
 				builder.WriteString(item.String())
 			}
 		}
@@ -252,7 +252,7 @@ func extractReasoningText(node gjson.Result) string {
 	return ""
 }
 
-func firstNonEmptyJSONText(root gjson.Result, paths ...string) string {
+func firstNonEmptyJSONText(root ojson.Result, paths ...string) string {
 	for _, path := range paths {
 		if text := root.Get(path).String(); strings.TrimSpace(text) != "" {
 			return text
