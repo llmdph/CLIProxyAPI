@@ -20,10 +20,9 @@ func TestBuildQuotaSwitchesToConsole(t *testing.T) {
 		Provider: "xai",
 		Status:   StatusActive,
 		Metadata: map[string]any{
-			"type":                  "xai",
-			"email":                 "xai-dual@outlook.com",
-			"sso":                   "console-sso-token",
-			"console_cursor_merged": true,
+			"type":  "xai",
+			"email": "xai-dual@outlook.com",
+			"sso":   "console-sso-token",
 		},
 	}
 	if _, err := m.Register(context.Background(), auth); err != nil {
@@ -229,10 +228,9 @@ func TestMarkResultSkipsCooldownAfterBuildToConsoleSwitch(t *testing.T) {
 		Provider: "xai",
 		Status:   StatusActive,
 		Metadata: map[string]any{
-			"type":                  "xai",
-			"email":                 "xai-failover@outlook.com",
-			"sso":                   "console-sso-token",
-			"console_cursor_merged": true,
+			"type":  "xai",
+			"email": "xai-failover@outlook.com",
+			"sso":   "console-sso-token",
 		},
 	}
 	if _, err := m.Register(context.Background(), auth); err != nil {
@@ -281,7 +279,7 @@ func TestExecuteStreamBuildQuotaRetriesSameAccountWithoutExpandingBucket(t *test
 			ID:       id,
 			Provider: "xai",
 			Status:   StatusActive,
-			Metadata: map[string]any{"type": "xai", "email": id, "sso": "console-sso-token", "console_cursor_merged": true},
+			Metadata: map[string]any{"type": "xai", "email": id, "sso": "console-sso-token"},
 		}
 		if _, err := m.Register(context.Background(), auth); err != nil {
 			t.Fatalf("register %s: %v", id, err)

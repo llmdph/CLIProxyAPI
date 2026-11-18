@@ -1621,6 +1621,7 @@ func buildXAIWebsocketRequestBody(body []byte, finalizers ...helps.PayloadFinali
 	if len(finalizers) > 0 && finalizers[0] != nil {
 		wsReqBody = finalizers[0](wsReqBody)
 	}
+	wsReqBody, _ = sjson.DeleteBytes(wsReqBody, "client_metadata")
 	wsReqBody, _ = sjson.SetBytes(wsReqBody, "type", "response.create")
 	return wsReqBody
 }

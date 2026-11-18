@@ -297,6 +297,19 @@ func (cfg *Config) SanitizeXAIKeys() {
 	for i := range cfg.XAIKey {
 		cfg.XAIKey[i].AlphaSearch = false
 	}
+	if len(cfg.XAI.SensitiveWords) > 0 {
+		normalizedWords := make([]string, 0, len(cfg.XAI.SensitiveWords))
+		for _, w := range cfg.XAI.SensitiveWords {
+			if trimmed := strings.TrimSpace(w); trimmed != "" {
+				normalizedWords = append(normalizedWords, trimmed)
+			}
+		}
+		if len(normalizedWords) > 0 {
+			cfg.XAI.SensitiveWords = normalizedWords
+		} else {
+			cfg.XAI.SensitiveWords = nil
+		}
+	}
 }
 
 // SanitizeMetaKeys normalizes Meta API key entries, defaulting BaseURL to https://api.meta.ai/v1 if empty.

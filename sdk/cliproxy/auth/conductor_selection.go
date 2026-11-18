@@ -1917,7 +1917,7 @@ func (m *Manager) pickNextLegacy(ctx context.Context, provider, model string, op
 		}
 		m.mu.Unlock()
 	}
-	return authCopy, executor, nil
+	return m.applyBoundProxy(authCopy), executor, nil
 }
 
 // SelectAuth selects one credential through the configured scheduling strategy.
@@ -2147,7 +2147,7 @@ func (m *Manager) pickNext(ctx context.Context, provider, model string, opts cli
 		}
 		m.mu.Unlock()
 	}
-	return authCopy, executor, nil
+	return m.applyBoundProxy(authCopy), executor, nil
 }
 
 func (m *Manager) pickNextMixedLegacy(ctx context.Context, providers []string, model string, opts cliproxyexecutor.Options, tried map[string]struct{}) (*Auth, ProviderExecutor, string, error) {
@@ -2272,7 +2272,7 @@ func (m *Manager) pickNextMixedLegacy(ctx context.Context, providers []string, m
 		}
 		m.mu.Unlock()
 	}
-	return authCopy, executor, providerKey, nil
+	return m.applyBoundProxy(authCopy), executor, providerKey, nil
 }
 
 func (m *Manager) pickNextMixed(ctx context.Context, providers []string, model string, opts cliproxyexecutor.Options, tried map[string]struct{}) (*Auth, ProviderExecutor, string, error) {
@@ -2365,7 +2365,7 @@ func (m *Manager) pickNextMixed(ctx context.Context, providers []string, model s
 		}
 		m.mu.Unlock()
 	}
-	return authCopy, executor, providerKey, nil
+	return m.applyBoundProxy(authCopy), executor, providerKey, nil
 }
 
 func isAuthUnavailableError(err error) bool {

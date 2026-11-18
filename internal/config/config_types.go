@@ -211,6 +211,8 @@ type XAIConfig struct {
 	// Grok47Accounts chooses which accounts grok-4.7 and grok-4.7-build-fast may use.
 	// Empty means outlook-clean. Allowed: outlook-clean, outlook-all, non-outlook, all.
 	Grok47Accounts string `yaml:"grok-4-7-accounts,omitempty" json:"grok-4-7-accounts,omitempty"`
+	// SensitiveWords is a list of words to obfuscate with zero-width characters in instructions and messages.
+	SensitiveWords []string `yaml:"sensitive-words,omitempty" json:"sensitive-words,omitempty"`
 }
 
 // ConsoleEnabled reports whether Console may be used. Default true when unset.

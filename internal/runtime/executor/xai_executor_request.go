@@ -158,8 +158,10 @@ func (e *XAIExecutor) prepareResponsesRequestTo(ctx context.Context, req cliprox
 	body = sanitizeXAIInputEncryptedContentWithOptions(body, true)
 	body = normalizeCodexInstructions(body)
 	// stop is supported by Chat Completions but not by xAI's Responses API.
+	// client_metadata carries downstream Codex telemetry and must not be sent to xAI.
 	// Thinking was handled before payload overrides and must not be revalidated here.
 	body, _ = sjson.DeleteBytes(body, "stop")
+	body, _ = sjson.DeleteBytes(body, "client_metadata")
 	body = normalizeXAIImageRefs(body)
 
 	sessionID, errSession := xaiResolveComposerSessionID(ctx, req, opts, baseModel)
@@ -169,6 +171,7 @@ func (e *XAIExecutor) prepareResponsesRequestTo(ctx context.Context, req cliprox
 	if sessionID != "" {
 		body = helps.SetStringIfDifferent(body, "prompt_cache_key", sessionID)
 	}
+	body = e.obfuscateSensitiveWords(body)
 
 	return &xaiPreparedRequest{
 		finalizePayload:       finalizePayload,
@@ -1905,4 +1908,26 @@ func ensureXAIUserAgent(r *http.Request, clientHeaders ...http.Header) {
 		return
 	}
 	misc.EnsureHeader(r.Header, util.ResolveClientHeaders(r, clientHeaders...), "User-Agent", xaiDefaultUserAgent())
+}
+
+func (e *XAIExecutor) obfuscateSensitiveWords(body []byte) []byte {
+	words := e.sensitiveWords()
+	if len(words) == 0 {
+		return body
+	}
+	matcher := helps.BuildSensitiveWordMatcher(words)
+	return helps.ObfuscateSensitiveWordsInResponses(body, matcher)
+}
+
+func (e *XAIExecutor) sensitiveWords() []string {
+	if e == nil || e.cfg == nil {
+		return nil
+	}
+	if len(e.cfg.XAI.SensitiveWords) > 0 {
+		return e.cfg.XAI.SensitiveWords
+	}
+	if len(e.cfg.Antigravity.SensitiveWords) > 0 {
+		return e.cfg.Antigravity.SensitiveWords
+	}
+	return nil
 }

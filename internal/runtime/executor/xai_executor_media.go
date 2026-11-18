@@ -13,6 +13,7 @@ import (
 	cliproxyexecutor "github.com/router-for-me/CLIProxyAPI/v8/sdk/cliproxy/executor"
 	log "github.com/sirupsen/logrus"
 	"github.com/tidwall/gjson"
+	"github.com/tidwall/sjson"
 )
 
 func (e *XAIExecutor) executeImages(ctx context.Context, auth *cliproxyauth.Auth, req cliproxyexecutor.Request, opts cliproxyexecutor.Options, endpointPath string) (resp cliproxyexecutor.Response, err error) {
@@ -32,6 +33,7 @@ func (e *XAIExecutor) executeImages(ctx context.Context, auth *cliproxyauth.Auth
 
 	payload := normalizeXAIImageRefs(req.Payload)
 	payload = helps.NewPayloadFinalizer(e.cfg, e.Identifier(), model, "openai", "", req.Payload, req, opts)(payload)
+	payload, _ = sjson.DeleteBytes(payload, "client_metadata")
 	reporter.SetTranslatedRequestMetadata(payload, "openai")
 	url := strings.TrimSuffix(baseURL, "/") + endpointPath
 	httpReq, err := http.NewRequestWithContext(ctx, http.MethodPost, url, bytes.NewReader(payload))
@@ -88,6 +90,7 @@ func (e *XAIExecutor) executeVideos(ctx context.Context, auth *cliproxyauth.Auth
 
 	payload := normalizeXAIImageRefs(req.Payload)
 	payload = helps.NewPayloadFinalizer(e.cfg, e.Identifier(), model, "openai", "", req.Payload, req, opts)(payload)
+	payload, _ = sjson.DeleteBytes(payload, "client_metadata")
 	method := http.MethodPost
 	endpointPath := xaiVideosGenerationsPath
 	var body io.Reader = bytes.NewReader(payload)

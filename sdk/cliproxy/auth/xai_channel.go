@@ -54,9 +54,6 @@ func XAIHasConsoleChannel(auth *Auth) bool {
 	if auth == nil || !isXAIProvider(auth.Provider) {
 		return false
 	}
-	if merged, known := xaiConsoleCursorMergedState(auth); known && !merged {
-		return false
-	}
 	if XAIConsoleQuotaExhausted(auth) {
 		return false
 	}

@@ -110,6 +110,62 @@ func ObfuscateSensitiveWords(payload []byte, matcher *SensitiveWordMatcher) []by
 	return payload
 }
 
+// ObfuscateSensitiveWordsInResponses processes an OpenAI Responses API payload
+// and obfuscates sensitive words in top-level instructions and message content.
+func ObfuscateSensitiveWordsInResponses(payload []byte, matcher *SensitiveWordMatcher) []byte {
+	if matcher == nil || matcher.regex == nil || len(payload) == 0 {
+		return payload
+	}
+
+	// 1. Obfuscate top-level instructions and system prompt fields
+	for _, sysKey := range []string{"instructions", "system", "system_instruction"} {
+		if sysRes := gjson.GetBytes(payload, sysKey); sysRes.Type == gjson.String {
+			text := sysRes.String()
+			if obfuscated := matcher.obfuscateText(text); obfuscated != text {
+				payload, _ = sjson.SetBytes(payload, sysKey, obfuscated)
+			}
+		}
+	}
+
+	// 2. Obfuscate in input items (text and content blocks)
+	input := gjson.GetBytes(payload, "input")
+	if input.IsArray() {
+		input.ForEach(func(itemKey, item gjson.Result) bool {
+			itemPath := "input." + itemKey.String()
+			if textRes := item.Get("text"); textRes.Type == gjson.String {
+				text := textRes.String()
+				if obfuscated := matcher.obfuscateText(text); obfuscated != text {
+					payload, _ = sjson.SetBytes(payload, itemPath+".text", obfuscated)
+				}
+			}
+			content := item.Get("content")
+			if !content.Exists() {
+				return true
+			}
+			if content.Type == gjson.String {
+				text := content.String()
+				if obfuscated := matcher.obfuscateText(text); obfuscated != text {
+					payload, _ = sjson.SetBytes(payload, itemPath+".content", obfuscated)
+				}
+			} else if content.IsArray() {
+				content.ForEach(func(partKey, part gjson.Result) bool {
+					partType := part.Get("type").String()
+					if partType == "input_text" || partType == "text" || partType == "output_text" {
+						text := part.Get("text").String()
+						if obfuscated := matcher.obfuscateText(text); obfuscated != text {
+							payload, _ = sjson.SetBytes(payload, itemPath+".content."+partKey.String()+".text", obfuscated)
+						}
+					}
+					return true
+				})
+			}
+			return true
+		})
+	}
+
+	return payload
+}
+
 // ObfuscateSensitiveWordsInSystemInstruction obfuscates sensitive words in an Antigravity system instruction.
 func ObfuscateSensitiveWordsInSystemInstruction(payload []byte, matcher *SensitiveWordMatcher) []byte {
 	if matcher == nil || matcher.regex == nil {

@@ -7772,3 +7772,50 @@ func TestApplyPatchResponsesExecutorLocalFailures(t *testing.T) {
 		}
 	}
 }
+
+func TestXAIExecutor_ObfuscatesSensitiveWords(t *testing.T) {
+	cfg := &config.Config{
+		XAI: config.XAIConfig{
+			SensitiveWords: []string{"Claude Code", "Codex"},
+		},
+	}
+	exec := NewXAIExecutor(cfg)
+	req := cliproxyexecutor.Request{
+		Model: "grok-4",
+		Payload: []byte(`{
+			"instructions": "You are Codex, follow repository instructions.",
+			"input": [
+				{
+					"type": "message",
+					"role": "developer",
+					"content": [{"type": "input_text", "text": "You are Claude Code, Anthropic's official CLI."}]
+				},
+				{
+					"type": "message",
+					"role": "user",
+					"content": "Please inspect Codex files."
+				}
+			]
+		}`),
+	}
+	opts := cliproxyexecutor.Options{
+		SourceFormat: sdktranslator.FormatOpenAIResponse,
+	}
+	prepared, err := exec.prepareResponsesRequest(context.Background(), req, opts, true)
+	if err != nil {
+		t.Fatalf("prepareResponsesRequest error: %v", err)
+	}
+	bodyStr := string(prepared.body)
+	if strings.Contains(bodyStr, "You are Codex") {
+		t.Fatalf("prepared body still contains plain 'You are Codex': %s", bodyStr)
+	}
+	if strings.Contains(bodyStr, "You are Claude Code") {
+		t.Fatalf("prepared body still contains plain 'You are Claude Code': %s", bodyStr)
+	}
+	if !strings.Contains(bodyStr, "C\u200Bodex") {
+		t.Fatalf("prepared body should contain obfuscated 'C\\u200Bodex': %s", bodyStr)
+	}
+	if !strings.Contains(bodyStr, "C\u200Blaude C\u200Bode") {
+		t.Fatalf("prepared body should contain obfuscated 'C\\u200Blaude C\\u200Bode': %s", bodyStr)
+	}
+}

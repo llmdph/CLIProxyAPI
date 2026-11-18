@@ -63,61 +63,19 @@ func xaiMarkedConsoleChannel(auth *Auth) bool {
 // Only Cursor-linked accounts (registered after 2026-10-13) may.
 // A failed lookup does not cache a result, so a later quota event can retry.
 func (m *Manager) allowXAIConsoleSwitch(ctx context.Context, auth *Auth) bool {
-	merged, known := xaiConsoleCursorMergedState(auth)
-	if !known {
-		var err error
-		merged, known, err = fetchXAIConsoleCursorMerged(ctx, auth)
-		if err != nil || !known {
-			if err != nil {
-				log.WithError(err).Warnf("xai: console eligibility check failed for %s", authID(auth))
-			}
-			return false
-		}
-		setXAIConsoleCursorMerged(auth, merged)
+	if auth == nil || !isXAIProvider(auth.Provider) {
+		return false
 	}
-	if merged {
-		return true
+	if XAIConsoleQuotaExhausted(auth) {
+		return false
 	}
-	setXAIChannel(auth, XAIChannelBuild)
-	log.Warnf("xai: auth %s is not linked to Cursor (registered on or before 2026-10-12); skipping console", authID(auth))
-	return false
+	return XAIConsoleSSO(auth) != ""
 }
 
 // alignXAIConsoleChannel drops Console on accounts that are not Cursor-linked.
 // Build-channel auths are left alone so ordinary requests do not call grok.com.
 func (m *Manager) alignXAIConsoleChannel(ctx context.Context, auth *Auth) *Auth {
-	if m == nil || auth == nil || !isXAIProvider(auth.Provider) || !xaiMarkedConsoleChannel(auth) {
-		return auth
-	}
-	merged, known := xaiConsoleCursorMergedState(auth)
-	if known && merged {
-		return auth
-	}
-	if !known {
-		var err error
-		merged, known, err = fetchXAIConsoleCursorMerged(ctx, auth)
-		if err != nil || !known {
-			if err != nil {
-				log.WithError(err).Warnf("xai: console eligibility check failed for %s", authID(auth))
-			}
-			return auth
-		}
-		setXAIConsoleCursorMerged(auth, merged)
-	}
-	if merged {
-		updated, errUpdate := m.Update(ctx, auth.Clone())
-		if errUpdate != nil || updated == nil {
-			return auth
-		}
-		return updated
-	}
-	setXAIChannel(auth, XAIChannelBuild)
-	log.Warnf("xai: auth %s left console; registered on or before 2026-10-12 (cursorMerged=false)", authID(auth))
-	updated, errUpdate := m.Update(ctx, auth.Clone())
-	if errUpdate != nil || updated == nil {
-		return auth
-	}
-	return updated
+	return auth
 }
 
 func authID(auth *Auth) string {
