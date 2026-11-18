@@ -883,25 +883,6 @@ func (a *Auth) DisplayAccount() string {
 	return strings.TrimSpace(value)
 }
 
-func headerValueFromHTTPHeader(headers http.Header, name string) string {
-	if headers == nil {
-		return ""
-	}
-	if value := strings.TrimSpace(headers.Get(name)); value != "" {
-		return value
-	}
-	for key, values := range headers {
-		if !strings.EqualFold(key, name) {
-			continue
-		}
-		for _, value := range values {
-			if value = strings.TrimSpace(value); value != "" {
-				return value
-			}
-		}
-	}
-	return ""
-}
 
 type codexClientRequestContextKey struct{}
 
@@ -1729,52 +1710,6 @@ func IsCodexClientUserAgent(userAgent string) bool {
 		strings.Contains(ua, "codex_cli_rs") ||
 		strings.Contains(ua, "codex-tui") ||
 		strings.Contains(ua, "codex_exec")
-}
-
-// IsCodexClientRequest reports whether the request originates from a Codex client.
-func IsCodexClientRequest(ctx context.Context, clientHeaders ...http.Header) bool {
-	if ctx != nil {
-		if ginCtx, ok := ctx.Value("gin").(*gin.Context); ok && ginCtx != nil && ginCtx.Request != nil {
-			if IsCodexClientUserAgent(headerValueFromHTTPHeader(ginCtx.Request.Header, "User-Agent")) {
-				return true
-			}
-		}
-	}
-	for _, headers := range clientHeaders {
-		if IsCodexClientUserAgent(headerValueFromHTTPHeader(headers, "User-Agent")) {
-			return true
-		}
-	}
-	return false
-}
-
-// IsCodexUseSIWCForRequest reports whether a request should use the nested SIWC credential section.
-// Requests from Codex clients ignore use_siwc and always use non-SIWC credentials.
-func IsCodexUseSIWCForRequest(ctx context.Context, a *Auth, clientHeaders ...http.Header) bool {
-	if IsCodexClientRequest(ctx, clientHeaders...) {
-		return false
-	}
-	return IsCodexUseSIWC(a)
-}
-
-// OuterExpirationTime extracts the outer credential expiration timestamp, ignoring the nested "siwc" section.
-func (a *Auth) OuterExpirationTime() (time.Time, bool) {
-	if a == nil {
-		return time.Time{}, false
-	}
-	tokenStr := authOuterAccessToken(a)
-	if tokenStr != "" && a.RejectedAccessToken != "" && a.RejectedAccessToken == tokenStr {
-		return time.Unix(0, 0), true
-	}
-	if tokenStr != "" {
-		if jwtExp, ok := parseJWTExp(tokenStr); ok {
-			return jwtExp, true
-		}
-	}
-	if ts, ok := expirationFromMap(a.Metadata); ok {
-		return ts, true
-	}
-	return time.Time{}, false
 }
 
 func canonicalAuthFileDigest(data []byte) string {
